@@ -1,0 +1,413 @@
+--- Page 1 ---
+Draft version November 20, 2023
+Simulation method of urban evacuation based on mesoscopic cellular automata ∗
+Wei L v,1, 2 Jinghui W ang,1, 2 Zhiming F ang,3, † and Dun Mao 1, 2
+1China Research Center for Emergency Management
+Wuhan University of Technology
+Wuhan, China
+2School of Safety Science and Emergency Management
+Wuhan University of Technology
+Wuhan, China
+3Business School
+University of Shanghai for Science and Technology
+Shanghai, China
+ABSTRACT
+This study integrates pedestrian flow characteristics to formulate a mesoscopic cellular automata
+model tailored for simulating evacuations in large-scale scenarios. Departing from the conventional
+planar grid cell division, the model employs road cell segmentation, thereby physically enlarging the
+dimensions of individual cells. This augmentation accommodates an increased occupancy of individuals
+per cell, representing pedestrian flow parameters within each cell through state variables. The source
+loading cell facilitates the simulation of pedestrian behavior transitioning from buildings to roads
+during an actual evacuation event, while the unloading cell situated at the exit removes evacuees from
+the system. The continuity equation for state transitions comprehensively encapsulates the dynamics
+of pedestrians throughout the evacuation process. Potential challenges in actual evacuation processes
+are identified through the simulation, offering valuable insights for improvement. This research aims
+to contribute to a more effective and informed approach to evacuation planning and management.
+Keywords: mesoscopic cellular automata, large-scale simulation, pedestrian evacuation, partition evac-
+uation
+1. INTRODUCTION
+In recent years, with the expansion of urban and the rapid increase in population in our country, coupled with the
+ongoing deterioration of the global climate environment, frequent natural disasters such as earthquakes, tsunamis,
+floods, as well as accidents and disasters like fires, explosions, and hazardous material leaks, have caused significant
+loss of life and economic damage to many cities. Urban public safety is facing tremendous pressure and challenges.
+When cities experience major disaster incidents, the rapid evacuation of the population within the affected area to
+safe zones is a crucial measure to ensure the safety of people’s lives. The issue of regional evacuation in urban areas
+is gradually becoming a new research focus in the field of evacuation.
+Unlike traditional scenarios of building fire evacuation, regional evacuation scenarios involve larger spatial extents,
+longer evacuation distances, and evacuation facilities that depend more on the region’s road infrastructure. Therefore,
+conducting large-scale evacuation drills to analyze the feasibility and effectiveness of regional emergency evacuation
+plans is evidently impractical. It is necessary to employ simulation techniques based on evacuation models for research.
+By simulating the movement of individuals through computer modeling, results such as evacuation time, efficiency,
+personnel density, and flow rate can be calculated. These data are essential for assessing evacuation risks, optimizing
+evacuation plans, and addressing practical concerns.
+∗ Received 4 January 2021; revised manuscript received 19 February 2021.
+Acta Physica Sinica [In Chinese]
+† zhmfang2015@163.com
+arXiv:2311.10554v1  [physics.soc-ph]  17 Nov 2023
+--- Page 2 ---
+2
+In the field of personnel evacuation modeling, cellular automata model, due to its efficiency and ease of implementa-
+tion, has been widely utilized in simulating the evacuation of personnel in architectural spaces. Similarly, it possesses
+the capability to simulate emergency evacuations in urban areas.
+In the realm of cellular automata evacuation models, many scholars have initiated research early on and conducted
+extensive expansion model studies in various evacuation scenarios. Miyagawa & Ichinose (2020) established a multi-
+grid cellular automata model for crowd evacuation, investigating the impact of lateral movement and turning behavior
+on the evacuation process. Ji et al. (2018) changing the cellular shape from rectangular to triangular, increased the
+number of movement directions of pedestrians in the model from 8 to 14. Maniccam (2003) transformed the cellular
+shape from rectangular to hexagonal and studied the variation in critical density within the cells. Leng et al. (2014)
+developed a field cellular model based on regular hexagons, studying dynamic characteristics of pedestrians in corridors.
+Kim et al. (2018) expanding the cellular automata model, simulated the influence of differently proportioned disabled
+populations on channel evacuation. Hanisch et al. (2003) employed cellular transport models from traffic research to
+study pedestrian flow in public spaces, and Bandini et al. (2017) proposed a multi-scale modeling approach based on
+cellular automata for simulating ferry transportation scenes in Staten Island, New York. Lämmel & Flötteröd (2015)
+established an event-driven cellular automata model, simulating single and bidirectional pedestrian flow evacuation
+scenarios. Kaji & Inohara (2017) combining multi-grid cellular automata models and static field models, studied the
+flow characteristics of fluids in laminar flow. Shi et al. (2018) introduced a mesoscopic evacuation model and developed
+a new static field algorithm for modeling personnel evacuation at the mesoscopic scale.
+Some scholars have primarily focused on micro-scale cellular automata evacuation models within building interiors.
+Hu & You (2014) developed a three-dimensional cellular automata model to study pedestrian flow characteristics on
+stairs. Lei et al. (2015) used cellular automata models to study the mechanisms of congestion-induced injuries in
+crowded pedestrian areas. Ren et al. (2012) established a cellular automata model considering pedestrians’ walking
+tendency characteristics and analyzed pedestrian flow features using complex network theory. Xu (2018) introduced
+a cellular automata model considering detour behavior by introducing a pedestrian perception range parameter. Jing
+(2018) considering pedestrians’ scenario-based movement direction and expected velocity rules, expanded the field
+strength model. Cao et al. (2015) established a multi-grid personnel evacuation model in low visibility environments,
+studying the impact of exit width, exit quantity, and initial density on evacuation time.
+Summarizingthecurrentresearchstatusbothdomesticallyandinternationallyrevealsthatexistingcellularautomata
+evacuation models are primarily sophisticated grid models at the microscopic level. They are mainly applied to two-
+dimensional plane scenarios, with evacuation spaces predominantly confined to small-scale architectural or local areas.
+However, cellular automata models suitable for simulating large-scale urban area evacuations are still immature. This
+is mainly due to the high-precision characteristics of microscopic cellular automata models, which impose significant
+constraints on computational efficiency when expanding to large-scale spaces. Therefore, to explore the applicability
+of cellular automata evacuation models in large-scale spaces, this paper proposes a method for urban area emergency
+evacuation simulation based on mesoscopic cellular automata. This involves partitioning the road network of the
+evacuation area into microscopic cells, loading and unloading personnel flow on specific cells to facilitate evacuation
+generation and completion, and transferring macroscopic state variables on road cells to realize the evacuation process.
+The aim is to provide scientific support for the demonstration of large-scale urban emergency evacuation plans.
+2. MODEL
+2.1. Microscopic cellular automata evacuation model
+Presently, conventional cellular automata evacuation models predominantly constitute microscopic grid-based evac-
+uation models. This category encompasses spatiotemporal discrete models that alter the system’s state according to
+predefined rules, including biased random walk models with no backtracking (Muramatsu et al. 1999), field models
+(Burstedde et al. 2001), multi-grid models (Xu et al. 2008) and k-nearest neighbor models(Ma et al. 2010), etc. The
+core concept of these models revolves around effecting changes in the spatial state of evacuated individuals through
+their migration on cellular automata. Consequently, the crux of these models lies in the computation of migration
+probabilities between cells. Taking the classical field floor model (FF) as an illustrative example, it incorporates the
+consideration of the impact of the system’s structure or architectural spatial configuration on evacuees through static
+field. Additionally, it considers the guiding effects of crowd movement in the system through dynamic field. Sub-
+sequently, based on Formula 1, it calculates the transfer probabilities of evacuees on each cell under the combined
+--- Page 3 ---
+3
+influence of the static and dynamic field. These probabilities are then utilized to update the spatial positions of
+evacuees within the system, facilitating the simulation of dynamic evacuation processes, as depicted in Fig.1.
+pij = (
+X
+pij)
+−1
+exp(kDDij) exp(kSSij)(1 − nij)ξij (1)
+Figure 1: Sketch map of the movement process in FF model.
+It is evident that cellular automata evacuation models, represented by the field model, are typical microscopic-scale
+models. As the cellular scale increases, the efficiency of simulation computations will significantly decrease. Conse-
+quently, these models face challenges in their applicability to large-scale spatial urban regional emergency evacuation
+simulation studies.
+2.2. Mesoscopic cellular automata evacuation model
+To facilitate the application of cellular automata model in urban regional emergency evacuation simulations, the
+fundamental concept of the classical cellular automata evacuation model, which involves updating the system state
+through the migration of evacuees between cells, must be maintained. However, at the model scale, a transition from
+the microscopic to mesoscopic level is imperative. The term "mesoscopic" encompasses two aspects: firstly, in terms
+of spatial cell division, the conventional planar grid division method is abandoned in favor of a road cell segmentation
+approach. Spatial discretization is limited to the evacuation road network, and the transfer of individuals from
+other areas to the roads is manifested through the source loading of specific cells in the evacuation road network, as
+illustrated in Fig.2. Secondly, in terms of evacuee cell migration, the conventional approach of individuals moving
+based on transfer probabilities is abandoned. Instead, the evacuation process is directly realized through the update
+of macroscopic state variables corresponding to cells, including evacuees count, population density, evacuation speed,
+etc., as shown in Fig.3.
+Figure 2: Change from plane mesh to road cell segmentation.
+Following the outlined principles, the fundamental procedure for constructing and simulating a mesoscopic cellular
+automata model for urban regional emergency evacuation is as follows:
+1. Define the Boundary of the Evacuation Region:
+--- Page 4 ---
+4
+Figure 3: The update of macro-state variable between road cells.
+•Determine the scope of the urban regional area under investigation.
+•Extract the evacuation road network within this defined boundary.
+2. Cell Segmentation of Evacuation Roads:
+•Divide the evacuation roads into cells.
+•Identify cells designated for source loading and cells corresponding to evacuation exits.
+3. Distance Calculation and Exit Assignment:
+•Compute the distances between each road cell and each exit cell.
+•Utilize a proximity-based exit selection principle to assign each road cell to the exit cell it points towards.
+4. Establish Macroscopic State Update Rules:
+•Develop rules for updating macroscopic state variables of road cells based on principles of traffic flow conservation,
+capacity constraints, and evacuation traffic flow patterns.
+5. Simulation Conditions Setup:
+•Define simulation conditions, including initial parameters and constraints.
+•Initiate calculations and updates for the state values of road network cells.
+•Iterate through calculations and updates until the population within the evacuation road network decreases to a
+critical threshold, signifying the completion of the evacuation process.
+In conjunction with Fig.4, within the mesoscopic cellular automata evacuation model, the fundamental morphological
+forms of road cells essentially comprise two types. One type is the ordinary cell without external personnel loading, as
+illustrated in Fig.4(a). The other type is the specific cell with external source loading, as depicted in 4(b). Regardless
+of the cell type, the rules followed are similar, and both must adhere to the principles of traffic flow conservation,
+capacity constraints, and evacuation traffic flow patterns.
+Figure 4: The update rule of macro-state variable between the evacuation road cells:
+(a) Without load source; (b) with load source.
+In terms of traffic flow conservation, the update of the personnel quantityN(i) within cell i must adhere to the
+following equation:
+Nt+∆t(i) = Nt(i) + Qin,∆t(i) − Qout,∆t(i) (2)
+--- Page 5 ---
+5
+Regarding capacity constraints, the personnel quantityNi(t) within cell i must not exceed the maximum capacity
+Ci of cell i:
+Nt+∆t(i) = Nt(i) + Qin,∆t(i) − Qout,∆t(i) (3)
+Concerning the dynamics of pedestrian flow, the flow between cell i and its adjacent cells must adhere to the
+flow-density relationship:
+Qin,∆t(i) = ρt(i − 1) · vt(i − 1) · w · ∆t (4)
+Qout,∆t(i) = ρt(i) · vt(i) · w · ∆t (5)
+In the aforementioned formula, Ni(t) represents the quantity of individuals within celli at time t, measured in
+persons; Qi(t) signifies the quantity of individuals entering and exiting celli during the time interval∆t, measured in
+persons; Ci denotes the maximum capacity of individuals that celli can accommodate, measured in persons;ρi(t) and
+Vi(t) respectively represent the density (measured in persons per square meter) and flow velocity (measured in meters
+per second) of individuals within celli at time t; w signifies the width of the cell, measured in meters.
+Based on the three fundamental rules outlined above, the macroscopic state variable update equation for unloaded
+source cells is established as follows:
+
+
+
+Qin,∆t(i) = min{ρt(i − 1) · vt(i − 1) · w · ∆t, C(i) − Nt(i)}
+Qout,∆t(i) = min{ρt(i) · vt(i) · w · ∆t, C(i + 1) − Nt(i + 1)}
+Nt+∆t(i) = min{Nt(i) + Qin,∆t(i) − Qout,∆t(i), C(i)}
+(6)
+The macroscopic state variable equation for loaded source cells is presented as follows:
+
+
+
+if Q in,∆t(i) + Qadd,∆t(i) ≤ C(i) − Nt(i)
+Qin,∆t(i) = ρt(i − 1) · vt(i − 1) · w · ∆t
+Qadd,∆t(i) = Qadd,∆t(i)
+if Q in,∆t(i) + Qadd,∆t(i) > C (i) − Nt(i)
+Qin,∆t(i) = α · [C(i) − Nt(i)]
+Qadd,∆t(i) = (1 − α) · [C(i) − Nt(i)]
+α = Qin,∆t(i)/[Qin,∆t(i) + Qadd,∆t(i)]
+Qout,∆t(i) = min{ρt(i) · vt(i) · w · ∆t, C(i + 1) − Nt(i + 1)}
+Nt+∆t(i) = min{Nt(i) + Qin,∆t(i) + Qadd,∆t(i) − Qout,∆t(i), C(i)}
+(7)
+Within the state update equation, the flow velocity, capacity, and density within celli can be computed using the
+following formulas:
+vt(i) = vf · exp[−ρt(i)/ρm] (8)
+ρt(i) = Nt(i)/(li · w) (9)
+C(i) = li · w · ρm (10)
+Where, ρc represents the critical density, denoting the threshold at which individuals can only proceed at an exceed-
+ingly minimal pace. Typically, the critical density is set at 5 persons per square meter (5ped/m2). Li signifies the
+length of celli, measured in meters, andVf denotes the free evacuation velocity, measured in meters per second.
+--- Page 6 ---
+6
+3. MODELING URBAN REGIONAL EVACUATION BASED ON MESOSCOPIC CELLULAR AUTOMATA
+3.1. Study area
+Given the expansive spatial scope and high population density characteristic of university campuses, which make
+them well-suited for conducting large-scale regional evacuation simulation studies, this study selects a university
+campus area near the Jianding Street in the Hongshan District of Wuhan City, as depicted in Fig.5. The feasibility
+study for regional emergency evacuation simulation is conducted using the mesoscopic cellular automata evacuation
+model proposed earlier. The selected campus area spans approximately 675 acres (450,000 m²) and includes 2 academic
+buildings, 1 library, 10 student dormitories, and 39 faculty dormitories. According to surveys, the maximum capacity
+of all buildings is around 16,838 individuals, while the actual population on regular teaching days is approximately
+8,200 individuals. Furthermore, the road network within the area consists of 8 east-west roads (numbered 1-8) and 7
+north-south roads (numbered 9-15), with 4 exits (marked with asterisks) leading to external boundaries.
+Figure 5: The spatial scope and boundary of the study area.
+3.2. Road network segmentation
+Along the directional alignment of the road network, with a fundamental cell size of 10 meters in length and 6 meters
+in width, the road network is partitioned into cellular units. Considering the locations of academic buildings, student
+dormitories, the library, and faculty-student residences, cells proximate to these densely populated areas are selected
+as evacuation source-loading cells (cells indicated by arrows), while boundary exit cells are chosen as evacuation exit
+cells (cells marked by asterisks), as illustrated in Fig.6.
+Furthermore, following the numbering of roads, cellular coding is sequentially applied to each road, starting from
+one end (west or north) and progressing towards the other end (east or south). The encoded cells are represented as
+Cell i,j, where i denotes the road number, andj represents the cell’s position within thei-th road. The statistical
+information for the road cell encoding in the research area is presented in Tab.1.
+3.3. Evacuation subnetworks division
+In this study, four exits are respectively designated as Exit 1, Exit 2, Exit 3, and Exit 4. By computing the distance
+between each road cell and the four designated exit cells and selecting the closest exit as the target exit for evacuation,
+the coverage range of road cells for the four exits is determined, as illustrated in Fig.7.
+4. SIMULATION AND RESULTS ANALYSIS
+--- Page 7 ---
+7
+Figure 6: The road cell segmentation of the road network.
+T able 1: Statistical information of regional road cellular coding.
+Road ID Length/m Width/m Number of Cells Source Loading Cells Exit Cells
+1 280 12 28 Cell 1,8 Cell1,1
+2 290 6 29 Cell 2,9, Cell2,29 /
+3 230 6 23 / Cell 3,23
+4 290 6 29 Cell 4,9, Cell4,17 /
+5 200 6 20 Cell 5,9 Cell5,1
+6 90 6 9 / /
+7 68 6 7 / /
+8 250 6 25 / /
+9 180 6 18 Cell 9,5, Cell9,13 /
+10 795 6 80 Cell 10,59, Cell10,80 /
+11 90 6 9 Cell 11,9 /
+12 148 6 15 / /
+13 530 6 53 Cell 13,21 /
+14 70 6 7 / /
+15 326 6 33 Cell 15,22 Cell15,33
+4.1. Scenario and parameter configuration
+The simulation scenario involves the rapid evacuation of the campus population to designated safe areas in the
+event of a significant disaster. Assuming a total evacuation requirement of 8200 individuals distributed across 13
+source-loaded cells near instructional buildings, the library, and dormitory structures, all individuals promptly receive
+evacuationdirectives. Subsequently, theyproceedtoevacuateviawalkingfromthesource-loadedcellstotheevacuation
+network. Participants enter the source-loaded cells on a first-come, first-served basis within capacity constraints, with
+no consideration given to the time it takes for individuals to traverse from their respective buildings to the source-loaded
+cells. The parameter values involved in the model are presented in Tab.2.
+Based on empirical investigations, the loading capacity of each source-loaded cell was determined, yielding the actual
+loading capacities for each cell as presented in Tab.3. Furthermore, employing the evacuation subnetwork delineated in
+Fig.7, the total evacuation counts for each exit during the evacuation process were derived and are detailed in Tab.4.
+Considering bottleneck effects during the evacuation from buildings, the loading probability for source-loaded cells
+was configured as a trapezoidal probability density distribution, as illustrated in Fig.8. The loading quantity for each
+--- Page 8 ---
+8
+Figure 7: Evacuation range of the roads covered by each exit.
+T able 2: Model parameters.
+Parameters Meaning V alue
+l Length of road cell 10m
+w Width of road cell 6m
+vf Free evacuation speed 1.5m/s
+∆t Timestep for calculation 1s
+ρm Congestion critical density 5per/m2
+source-loaded cell in each timestep is the product of the loading probability for that timestep and the total loading
+capacity, respectively. The total duration for each source-loaded cell, from the initiation of loading to completion,
+spans 240 timesteps. Commencing at the onset of the simulation, personnel loading commences for each source-loaded
+cell and concludes at the 240th timestep. Subsequently, pedestrians who have been loaded move along the pathways
+to the exit cell, exiting the campus. The simulation is deemed concluded when the remaining personnel drop below
+0.5 individuals, signifying the complete evacuation of all individuals from the campus.
+Figure 8: Probability density distribution figure of source loading cell.
+--- Page 9 ---
+9
+T able 3: The number of pedestrians loaded by each source loading cell.
+Cell index T otal evacuees
+Cell1,8 500
+Cell2,9 500
+Cell2,29 500
+Cell4,9 700
+Cell4,17 500
+Cell5,9 900
+Cell9,5 800
+Cell9,13 800
+Cell10,59 600
+Cell10,80 600
+Cell11,9 600
+Cell13,21 700
+Cell15,22 500
+T able 4: Evacuation number at each exit.
+Exits T otal evacuees
+Exit 1 1600
+Exit 2 1700
+Exit 3 3200
+Exit 4 1700
+Total 8200
+Figure 9: Temporal evolution of flow rates at individual exits and the overall evacuation flow rate.
+4.2. Results and disscussion
+Based on the provided cellular loading data and state update rules, extensive evacuation simulations of the campus
+were conducted using the mesoscopic cellular automata model. According to the simulation results, the relationship
+between the evacuation counts at each exit and the total evacuation count over time is illustrated in Fig.9. From the
+graph, it is evident that after 40 seconds, the curves exhibit an ascending trend, indicating that pedestrians begin to
+move from source-loaded cells to evacuate from the campus after the initial 40 seconds. The peak evacuation flow rate
+occurs between 250-400 seconds. Analyzing the curves depicting the relationship between the evacuation flow rate at
+--- Page 10 ---
+10
+Figure 10: Temporal evolution of both individual exits and the overall remaining evacuees.
+Figure 11: Location distribution of observed cellular.
+each exit over time reveals that the peak evacuation flow rate for exits 3 and 4 occurs later than the corresponding
+peak evacuation flow rate for exits 1 and 2. This delay is attributed to the higher evacuation pressure on exit 3 and
+the greater distance of exit 4 from the loaded cells within the evacuation sub-network. Overall, the evacuation flow
+rate for the campus shows an initial increase, followed by stabilization, and then a decline.
+Fig.10 illustrates the temporal evolution of the remaining evacuees for each exit and the overall. Generally, the
+curves exhibit a stable state during the early stages of evacuation, followed by a significant decline after a period
+of stability. In the later stages of evacuation, the decreasing trend begins to decelerate, and the remaining evacuees
+gradually approach zero. At the 672-second mark, the total remaining evacuees stand at 0.4925 individuals, indicating
+the complete evacuation of all personnel from the campus.
+To gain further insights into the micro-level variations of individual cellular states, this study focuses on the obser-
+vation of eight observed cells. The observation involves monitoring the temporal evolution of both the quantity and
+speeds within these cells. The specific locations of the designated observed cells are illustrated in Fig.11. The chosen
+eight observed cells are strategically dispersed across four evacuation sub-networks, encompassing one source-loaded
+cell, one exit cell, four road junction cells, and two road cells.
+--- Page 11 ---
+11
+Figs.12 and 13 depict the temporal variations in density and velocity within the selected eight cells. It is discernible
+from the graphs that Cell 6, designated as the exit cell, exhibits a peak density at 420 seconds, later than the peak
+times observed in other observed cells. Cell 5, positioned as the road node cell in front of Exit 3, bears a substantial
+evacuation pressure, with a peak density significantly higher than that of other observed cells, reaching nearly 120
+individuals. Correspondingly, the velocity at its location is the lowest among the eight observed cells, slightly exceeding
+1 m/s but remaining within the range of 1 m/s to 1.5 m/s, a fluctuation observed in the velocity of all observed cells
+during the evacuation process.
+Figure 12: Temporal evolution of evacuee quantities within the observed cell.
+Figure 13: Temporal evolution of evacuation speed within the observed cell.
+Fig.14 illustrates the distribution of evacuees in each cell at time intervals of 100 seconds. Notably, between 200
+s and 400 s, elevated evacuees are observed along various roads, signifying considerable evacuation pressure at each
+exit. At 500 seconds, Exit 1, Exit 2, and Exit 3 exhibit reduced populations in their exit cells, while Exit 4 still has
+pedestrians yet to complete evacuation. By 600 seconds, only a small number of individuals remain in the evacuation
+scene, signaling the nearing conclusion of the evacuation.
+5. CONCLUSIONS
+(1) This study introduces a novel mesoscopic cellular automata model for large-scale evacuation, utilizing road cells
+to establish a continuous model for simulating pedestrian evacuation. This addresses the challenge faced by traditional
+microscopic cellular automata models in simulating evacuation in large-scale spaces. The model is applied to simulate
+a university campus, yielding favorable simulation results.
+--- Page 12 ---
+12
+Figure 14: Spatial staffing distribution:
+(a) t = 100s; (b) t = 200s; (c) t = 300s; (d) t = 400s; (e) t = 500s; (f) t = 600s.
+(2) The total evacuation time in the simulation is 672 seconds, reaching the peak evacuation flow between 250-400
+seconds. During this period, the peak occupancy at the observed cell 5 approaches 120 evacuees. It is crucial to avoid
+excessively dense crowds during the evacuation process to prevent stampede incidents.
+(3) Simulation reveals that within the evacuation sub-network around exit 3, there are numerous living and facility
+areas, resulting in the highest cell loading and the maximum evacuation pressure on the road network. Therefore, in
+practical evacuation considerations, diverting individuals in this area could alleviate localized road network evacuation
+pressure.
+(4) Analysis of the simulation results indicates that exit 4 has a relatively small number of evacuees but requires the
+longest evacuation time among the four exits. This is attributed to the considerable distance between the loading area
+and the exit. Consequently, in practical evacuations, planning a shortcut between crowded areas and campus exits
+could expedite the evacuation process and reduce evacuation time.
+REFERENCES
+Bandini, S., Crociani, L., Feliciani, C., Gorrini, A., &
+Vizzari, G. 2017, in AI* IA 2017 Advances in Artificial
+Intelligence: XVIth International Conference of the
+Italian Association for Artificial Intelligence, Bari, Italy,
+November 14-17, 2017, Proceedings 16, Springer, 44–57
+Burstedde, C., Klauck, K., Schadschneider, A., & Zittartz,
+J. 2001, Physica A: Statistical Mechanics and its
+Applications, 295, 507
+Cao, S., Song, W., Lv, W., & Fang, Z. 2015, Physica A:
+Statistical Mechanics and its Applications, 436, 45
+Hanisch, Tolujew, Richter, & Schulze. 2003, in Proceedings
+of the 2003 Winter Simulation Conference, 2003., Vol. 2,
+IEEE, 1635–1641
+Hu, J., & You, L. 2014, Acta Physica Sinica
+Ji, J., Lu, L., Jin, Z., Wei, S., & Ni, L. 2018, Physica A:
+Statistical Mechanics and its Applications, 509, 1034
+Jing, Z. 2018, Journal of Tongji University, 46, 1026
+Kaji, M., & Inohara, T. 2017, Physica A: Statistical
+Mechanics and its Applications, 467, 85
+Kim, J., Ahn, C., & Lee, S. 2018, Physica A: Statistical
+Mechanics and its Applications, 510, 507
+--- Page 13 ---
+13
+Lämmel, G., & Flötteröd, G. 2015, Procedia Computer
+Science, 52, 950
+Lei, Z., Hao, Y., Mei, L., Shuai, W., & Xue-Yu, M. 2015,
+Acta Physica Sinica, 64
+Leng, B., Wang, J., Zhao, W., & Xiong, Z. 2014, Physica A:
+Statistical Mechanics and its Applications, 402, 119
+Ma, J., Song, W.-g., Zhang, J., Lo, S.-m., & Liao, G.-x.
+2010, Physica A: Statistical Mechanics and its
+Applications, 389, 2101
+Maniccam, S. 2003, Physica A: Statistical Mechanics and
+its Applications, 321, 653
+Miyagawa, D., & Ichinose, G. 2020, Physica A: Statistical
+Mechanics and its Applications, 549, 124376
+Muramatsu, M., Irie, T., & Nagatani, T. 1999, Physica A:
+Statistical Mechanics and its Applications, 267, 487
+Ren, G., Lu, L., & Wang, W. 2012, Acta Physica Sinica, 61
+Shi, M., Lee, E. W. M., & Ma, Y. 2018, Physica A:
+Statistical Mechanics and its Applications, 497, 198
+Xu, X. 2018, Journal of Safety Science and Technology, 14,
+20
+Xu, X., Song, W., & Zheng, H. 2008, Physica A: Statistical
+Mechanics and its Applications, 387, 5567
