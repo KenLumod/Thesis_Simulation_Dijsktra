@@ -1,6 +1,34 @@
-# USTP Evacuation Simulation Project - Documentation
+# Mesoscopic Cellular Automaton Evacuation Simulation Project - Documentation
 
 This repository contains the simulation code, data, and analysis tools for the USTP Evacuation Thesis project. The project compares different pathfinding algorithms (Baseline MCA, Dijkstra, ACO) for crowd evacuation simulation.
+
+Sample Images of Evacuation
+All Images use 5000 agents dispersed in roadcells and in 500s time limit.
+
+Baseline:
+Traditional Breadth-First-Approach
+<img width="1917" height="1030" alt="image" src="https://github.com/user-attachments/assets/1c0a3a19-bcdf-4b0c-8fe9-4ddb3b3b13eb" />
+
+Ant Colony Optimization(ACO):
+ACO first executes itself to leave pheromes for agents to follow through roadcells before proceeding with simulation.
+<img width="1917" height="1030" alt="image" src="https://github.com/user-attachments/assets/24094495-0354-4d52-952a-53f1aeedaad5" />
+
+It then proceed with the simulation after  placing in ACO.
+<img width="1918" height="1031" alt="image" src="https://github.com/user-attachments/assets/a97b2aad-e0b7-46d8-9e89-27c28a13db10" />
+
+Dijkstra:
+The same concept as ACO implementation.
+Executes Floodfill for Dijkstra before simulation.
+<img width="1916" height="1029" alt="image" src="https://github.com/user-attachments/assets/0fc6ff64-445c-4249-845f-22d422a6b3f1" />
+
+Then proceeds with simulation.
+<img width="1918" height="1032" alt="image" src="https://github.com/user-attachments/assets/2021e904-bb5e-4bb9-80f0-11afd07ebab1" />
+
+These results are for comparison purposes for the Thesis Paper(Base vs ACO vs Dijkstra)
+<img width="1076" height="917" alt="image" src="https://github.com/user-attachments/assets/2ec9c8a9-cbae-4a12-867d-7b3c0e6c31d2" />
+
+In context, it may seem that ACO stands at top in terms of evacuation simulation but when you check its results over 1000 iterations, it has introduced high variance which is not recommended for MCA simulations.
+Base and Dijkstra are far more consistent. ACO is stochastic and due to its nature of wanting to learn and guess, this algorithm is not suitable for this concept. In uniform-cost networks, ACO reduces congestion by distributing flow, but Dijkstra remains more appropriate for mesoscopic evacuation modeling once meaningful cost heterogeneity is introduced.
 
 ## 📂 Project Structure
 
