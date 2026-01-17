@@ -525,83 +525,10 @@ class MCASimulation:
         self.per_cell_casualty_history = [] # RESET
         self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
 
-    def recalculate_dynamic_paths(self):
-        """
-        Re-calculates Dijkstra fields based on current congestion levels.
-        This prevents 'Winner Takes All' behavior by penalizing crowded paths.
-        """
-        # 1. Update Edge Weights (Congestion Penalty)
-        # Cost = Distance * (1 + alpha * (rho / rho_max))
-        ALPHA = 5.0 # Tunable penalty factor
-        
-        for u, v in self.graph.edges():
-            # Geometric Distance (Base Cost)
-            p1 = self.cell_centroids.get(u)
-            p2 = self.cell_centroids.get(v)
-            base_dist = p1.distance(p2) if (p1 and p2) else 1.0
-            
-            # Congestion Factor
-            pop_u = self.population.get(u, 0)
-            pop_v = self.population.get(v, 0)
-            
-            area_u = self.cell_areas.get(u, 60.0)
-            area_v = self.cell_areas.get(v, 60.0)
-            
-            rho_u = pop_u / area_u if area_u > 0 else 0
-            rho_v = pop_v / area_v if area_v > 0 else 0
-            avg_rho = (rho_u + rho_v) / 2.0
-            
-            # Penalty
-            # If avg_rho = 5.0 (Max), penalty = 1 + 5*(1.0) = 6x cost
-            congestion_factor = 1.0 + ALPHA * (min(avg_rho, self.RHO_MAX) / self.RHO_MAX)
-            
-            new_weight = base_dist * congestion_factor
-            self.graph[u][v]['weight'] = new_weight
-            
-        # 2. Re-Compute Fields
-        # A. Safe Zone Field
-        if self.safe_zones is not None:
-             valid_safe = list(self.safe_zone_cells)
-             self.dijkstra_distances, _ = Dijkstra.calculate_dijkstra_field(self.graph, valid_safe)
-        
-        # B. Exit Field (Fallback)
-        self.dist_to_exit, _ = Dijkstra.calculate_dijkstra_field(self.graph, self.exits_ids)
-        
-        # 3. Re-Assign Directions (Gradient Descent)
-        for node in self.graph.nodes:
-            if node in self.exits_ids:
-                self.directions[node] = None
-                continue
-                
-            # Hybrid Logic
-            d_safe = self.dijkstra_distances.get(node, float('inf'))
-            if d_safe != float('inf'):
-                 source_field = self.dijkstra_distances
-            else:
-                 source_field = self.dist_to_exit
-            
-            min_dist = source_field.get(node, float('inf'))
-            current_best = min_dist
-            best_neighbor = None
-            
-            for neighbor in self.graph.neighbors(node):
-                d = source_field.get(neighbor, float('inf'))
-                if d < current_best:
-                    current_best = d
-                    best_neighbor = neighbor
-            
-            self.directions[node] = best_neighbor
-            
-        # 4. Re-Apply Safe Zone Overrides (Preserve Tunnels)
-        if hasattr(self, 'safe_path_nodes'):
-            for path in self.safe_path_nodes:
-                for i in range(len(path) - 1):
-                    self.directions[path[i]] = path[i+1]
+
 
     def step(self):
-        # DYNAMIC RE-ROUTING (Every 50 steps)
-        if self.time_step % 50 == 0 and self.time_step > 0:
-             self.recalculate_dynamic_paths()
+
 
         new_population = self.population.copy()
         total_deaths_this_step = 0

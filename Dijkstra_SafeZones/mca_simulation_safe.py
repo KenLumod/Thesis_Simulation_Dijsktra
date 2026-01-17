@@ -669,87 +669,9 @@ class MCASimulation:
         self.per_cell_casualty_history = []
         self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
 
-    def recalculate_dynamic_paths(self):
-        """
-        DYNAMIC REVERSE DIJKSTRA UPDATE (Section 3.3.6 & 3.3.7)
-        
-        Logic:
-        1. Calculate Penalty Field (C_cell) for every cell based on Hazards/Congestion.
-           Equation 3-8: C_cell = alpha * rho + beta * F + ...
-        2. Update Graph Edge Weights to reflect 'Effective Traversal Cost'.
-           Cost = Distance / (1 - C_cell)
-        3. Re-run Reverse Dijkstra from Exits to propagate new costs.
-        4. Update Flow Directions for agents to follow.
-        """
-        if self.time_step % 10 != 0: return # Update every 10 steps (approx 3-7s as per paper)
-
-        # 1. Update Penalties (C_cell)
-        # Parameters (Equation 3-8)
-        ALPHA = 1.0 # Density Weight
-        # Future: BETA (Fire), GAMMA (Smoke), etc.
-        
-        current_penalties = {}
-        
-        for cid, count in self.population.items():
-            if cid not in self.road_cells['id'].values: continue
-            
-            # Density
-            area = self.cell_areas.get(cid, 60.0)
-            cap = self.max_capacities.get(cid, area * self.RHO_MAX)
-            # Physical Density Ratio (0 to 1.0+)
-            rho_norm = (count / cap) if cap > 0 else 0
-            
-            # C_cell Formula
-            # Clamp to 0.95 to prevent division by zero in cost calculation
-            c_cell = min(0.95, ALPHA * rho_norm)
-            
-            # Store
-            self.penalties[cid] = c_cell
-            current_penalties[cid] = c_cell
-
-        # 2. Update Graph Weights (Effective Traversal Cost)
-        # We need to update the weights of edges pointing TO this cell (or bidirectional).
-        # Since it's an undirected graph in NetworkX (usually), we update edge attributes.
-        
-        for u, v in self.graph.edges():
-            # Get geometry distance (static)
-            # We assume initial weight was distance.
-            # If not stored, we re-calc or just assume 6.0m (Cell Height) / 10.0m.
-            # Let's use the 'weight' attribute if exists, else euclidean.
-            
-            # Determine Penalty for this edge.
-            # Agents move U -> V. The cost depends on entering V?
-            # Standard Dijkstra: Cost to traverse edge (u,v).
-            # If V is congested, cost to enter V is high.
-            # If U is congested, moving out is slow? 
-            # Usually Node Weight. We apply max(p_u, p_v).
-            
-            p_u = current_penalties.get(u, 0)
-            p_v = current_penalties.get(v, 0)
-            p_edge = max(p_u, p_v)
-            
-            # Base Distance (Geometry)
-            # We can retrieve original length if we stored it, or approx.
-            # For exactness, let's calc geometry if needed, or assume unit graph if unweighted.
-            # Our graph construction didn't explicitly set weights, so it defaults to 1?
-            # So Base Cost = 1.
-            
-            base_cost = 1.0
-            
-            # Cost Formula: Cost = Base / (1 - P)
-            # If P=0, Cost=1. If P=0.5, Cost=2. If P=0.9, Cost=10.
-            new_weight = base_cost / (1.0 - p_edge)
-            
-            self.graph[u][v]['weight'] = new_weight
-        # 3. Re-run Reverse Dijkstra (Global Update)
-        # This calls the main routing logic which uses the updated graph weights
-        self.compute_flow_directions()
-
 
     def step(self):
-        # DYNAMIC RE-ROUTING (Every 50 steps)
-        if self.time_step % 50 == 0 and self.time_step > 0:
-             self.recalculate_dynamic_paths()
+
 
         new_population = self.population.copy()
         total_deaths_this_step = 0
@@ -1607,7 +1529,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "road_cells_split.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "road_cells_split.gpkg ") #road_cells_split.gpkg | xu-road-cells.gpkg
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()
