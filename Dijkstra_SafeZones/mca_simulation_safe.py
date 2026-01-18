@@ -43,7 +43,7 @@ class MCASimulation:
         self.cell_areas = {}   # cell_id -> area (float)
         
         # Stampede Logic
-        self.STAMPEDE_DENSITY = 4.0 # p/m^2 
+        self.STAMPEDE_DENSITY = 3.5 # p/m^2 (Lowered from 4.0) 
         self.DEATH_RATE = 0.1 # 10% per second if overcrowded
         
         # State
@@ -51,9 +51,14 @@ class MCASimulation:
         self.casualties = 0
         self.casualties_per_cell = {} # cell_id -> total_deaths
         self.time_step = 0
+        self.time_step = 0
         self.history = []
         self.casualty_history = []
         self.per_cell_casualty_history = [] # LIST of DICTS
+        self.penalty_history = []  # NEW: Store composite scores per frame
+        self.distance_history = [] # NEW: Store Dijkstra Field per frame (Dynamic)
+        
+        # Exit Analysis
         
         # Exit Analysis
         self.exit_status = {} # exit_id -> 'OPEN'/'CLOSED'
@@ -64,6 +69,31 @@ class MCASimulation:
         # Viz Data
         self.cell_centroids = {}
         self.flow_vectors = {} # cell_idx -> (u, v)
+        self.flow_history = [] # List of dicts: time_step -> {(u,v): count}
+
+        # ----------------------------------------------------------------
+        # HAZARD-AWARE DIJKSTRA PARAMETERS
+        # ----------------------------------------------------------------
+        # 1. Weights (Influence on Routing)
+        self.W_FIRE = 1.0
+        self.W_SMOKE = 0.8
+        self.W_DENSITY = 0.6
+        self.W_DEBRIS = 0.4
+        self.W_TERRAIN = 0.2
+        self.W_TEMP_OBJ = 0.2
+        
+        # 2. Dynamics
+        self.HAZARD_COST_MULT = 50.0   # Cost = Dist * (1 + Score * MULT)
+        self.REROUTE_THRESHOLD = 0.7   # Max penalty occupied cell > 0.7 -> Reroute
+        self.REROUTE_COOLDOWN = 5      # Steps between reroutes
+        self.last_reroute_time = -999  # Allow immediate first visual update
+        
+        # 3. State
+        # {cell_id: {'fire':0.0, 'smoke':0.0, 'debris':0.0, 'terrain':0.0, 'temp':0.0}}
+        self.penalties = {} 
+        self.current_max_penalty = 0.0 # Track for GUI/Logic
+        self.burnt_cells = set() # Track cells that have peaked and are now decaying
+
 
         # DIJKSTRA Specific
         self.dijkstra_distances = {} # Final Distance Map
@@ -186,6 +216,12 @@ class MCASimulation:
             self.cell_centroids[cid] = row.geometry.centroid
             # Initialize tracker
             self.casualties_per_cell[cid] = 0.0
+            
+            # Initialize Penalties
+            self.penalties[cid] = {
+                'fire': 0.0, 'smoke': 0.0, 'debris': 0.0, 
+                'terrain': 0.0, 'temp': 0.0
+            }
             
         for idx_left, row in joins.iterrows():
             id_l = self.road_cells.iloc[idx_left]['id']
@@ -670,10 +706,121 @@ class MCASimulation:
         self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
 
 
+    def calculate_composite_score(self, cid, rho, fire_val):
+        """
+        Computes clamped composite penalty score for a cell.
+        S = min(0.95, weighted_sum)
+        """
+        p = self.penalties.get(cid)
+        if not p: return 0.0
+
+        # Note: fire_val passed in to ensure sync with external fire logic if any
+        # For now, we assume self.penalties['fire'] is updated via update_penalties or visually
+        
+        # 1. Normalize Components to [0, 1]
+        # Density: > 4.0 is panic (1.0), 0 is 0.
+        val_density = min(1.0, rho / self.STAMPEDE_DENSITY) if self.STAMPEDE_DENSITY > 0 else 0
+        
+        val_fire = min(1.0, p['fire'])
+        val_smoke = min(1.0, p['smoke'])
+        val_debris = min(1.0, p['debris'])
+        val_terrain = min(1.0, p['terrain'])
+        val_temp = min(1.0, p['temp'])
+        
+        # 2. Weighted Sum
+        w_sum = (val_fire * self.W_FIRE) + \
+                (val_smoke * self.W_SMOKE) + \
+                (val_density * self.W_DENSITY) + \
+                (val_debris * self.W_DEBRIS) + \
+                (val_terrain * self.W_TERRAIN) + \
+                (val_temp * self.W_TEMP_OBJ)
+                
+        # 3. Clamp Final Score
+        return min(0.95, w_sum)
+
+    def update_penalties(self):
+        """
+        Decay dynamics for transient penalties.
+        Fire/Terrain do NOT decay here (managed by event/static).
+        """
+        # Decay Rates
+        DECAY_SMOKE = 0.03  # Faster Decay (was 0.01)
+        DECAY_DEBRIS = 0.01 # Faster Decay (was 0.005)
+        DECAY_TEMP = 0.1
+        
+        for cid, p_dict in self.penalties.items():
+            # Decay
+            if p_dict['smoke'] > 0:
+                p_dict['smoke'] = max(0.0, p_dict['smoke'] - DECAY_SMOKE)
+            if p_dict['debris'] > 0:
+                p_dict['debris'] = max(0.0, p_dict['debris'] - DECAY_DEBRIS)
+            if p_dict['temp'] > 0:
+                p_dict['temp'] = max(0.0, p_dict['temp'] - DECAY_TEMP)
+            
+            # Fire Logic (Simple Propagation with Lifecycle)
+            import random
+            if p_dict['fire'] > 0:
+                if cid in self.burnt_cells:
+                    # DECAY PHASE
+                    # User Request: "Decay is WAY too slow" -> Increased to 0.03
+                    p_dict['fire'] = max(0.0, p_dict['fire'] - 0.03)
+                    if p_dict['fire'] == 0:
+                        self.burnt_cells.remove(cid)
+                else:
+                    # GROWTH PHASE
+                    if p_dict['fire'] < 1.0:
+                        p_dict['fire'] = min(1.0, p_dict['fire'] + 0.01) # Slower Growth (was 0.05)
+                    else:
+                        # Reached Peak -> Start Burnout (Switch to Decay)
+                        # Increased burnout chance to 10% (So it actually dies out)
+                        if random.random() < 0.10: 
+                             self.burnt_cells.add(cid)
+                
+                # ADJUSTED: Threshold 0.2, Chance 5% (Very Slow Spread, contained)
+                if p_dict['fire'] > 0.2 and cid not in self.burnt_cells:
+                    neighbors = list(self.graph.neighbors(cid))
+                    for n in neighbors:
+                         # 5% chance to ignite neighbor (reliable spread, but slow growth)
+                         if self.penalties[n]['fire'] == 0 and random.random() < 0.05:
+                             self.penalties[n]['fire'] = 0.2 # Start VERY small (needs ~10 steps to become dangerous)
+                             # Also add smoke
+                             self.penalties[n]['smoke'] = 0.6
+                             
+    def trigger_random_events(self):
+        """
+        Simulate secondary disasters (Collapse, Obstructions)
+        """
+        import random
+        # 0.5% chance per second for a random collapse somewhere
+        if random.random() < 0.005:
+            # Pick a random victim cell
+            candidates = list(self.graph.nodes)
+            if not candidates: return
+            
+            target = random.choice(candidates)
+            
+            # Immunity for Safe Zones / Exits (Don't block the finish line)
+            if hasattr(self, 'safe_zone_cells') and target in self.safe_zone_cells:
+                return
+            if self.road_to_exit.get(target) is not None:
+                return
+                
+            print(f"!!! EVENT: STRUCTURAL COLLAPSE at Cell {target} !!!")
+            # Set high penalties
+            self.penalties[target]['debris'] = 0.9
+            self.penalties[target]['temp'] = 0.8 # Obstruction
+            # (These will decay naturally via update_penalties)
+
     def step(self):
+        # 0. Check for New Random Events
+        self.trigger_random_events()
+        
+        # 1. Update Dynamics (Decay, Fire Spread)
+        self.update_penalties()
 
 
         new_population = self.population.copy()
+        current_step_flows = {} # (u, v) -> count
         total_deaths_this_step = 0
         
         # 1. Check for Stampedes
@@ -693,6 +840,196 @@ class MCASimulation:
                     self.casualties_per_cell[cid] = self.casualties_per_cell.get(cid, 0) + deaths
         
         self.casualties += total_deaths_this_step
+        
+        # 1.5 HAZARD-AWARE REROUTE CHECK
+        # --------------------------------------------------------
+        # Optimization: Check max penalty ONLY for occupied cells
+        max_occupied_penalty = 0.0
+        
+        # We need density for calculation
+        for cid, count in new_population.items():
+            if count > 0:
+                area = self.cell_areas.get(cid, 60.0)
+                rho = count / area
+                
+                # Calculate current score
+                # Assume fire is manual for now or in p_dict
+                fire_val = self.penalties[cid]['fire']
+                
+                score = self.calculate_composite_score(cid, rho, fire_val)
+                if score > max_occupied_penalty:
+                    max_occupied_penalty = score
+        
+        self.current_max_penalty = max_occupied_penalty
+        
+        # TRIGGER: Threshold + Cooldown
+        if (max_occupied_penalty > self.REROUTE_THRESHOLD) and \
+           (self.time_step - self.last_reroute_time > self.REROUTE_COOLDOWN):
+            
+            print(f"REROUTE TRIGGERED (Step {self.time_step}): Max Penalty {max_occupied_penalty:.2f} > {self.REROUTE_THRESHOLD}")
+            
+            # UPDATE GRAPH WEIGHTS
+            for u, v, data in self.graph.edges(data=True):
+                # We need to penalize the TARGET node (v) usually in directed, 
+                # but this is undirected graph used for pathing.
+                # Average penalty of u and v? Or specific?
+                # Dijkstra.py uses 'weight'.
+                
+                # Conservative: Max penalty of u or v
+                p_u = self.penalties[u]
+                p_v = self.penalties[v]
+                
+                # Get simplistic density for weight calc (using prev step pop)
+                # Get simplistic density for weight calc (using prev step pop)
+                pop_u = new_population.get(u, 0)
+                pop_v = new_population.get(v, 0)
+                
+                area_u = self.cell_areas.get(u, 60.0)
+                rho_u = pop_u / area_u if area_u > 0 else 0.0
+                
+                area_v = self.cell_areas.get(v, 60.0)
+                rho_v = pop_v / area_v if area_v > 0 else 0.0
+                
+                score_u = self.calculate_composite_score(u, rho_u, p_u['fire'])
+                score_v = self.calculate_composite_score(v, rho_v, p_v['fire'])
+                
+                # Edge penalty is max of nodes
+                edge_penalty = max(score_u, score_v)
+                
+                # Base Distance (Geometry)
+                base_dist = data.get('weight_original', data['weight'])
+                # Store original once
+                if 'weight_original' not in data:
+                    data['weight_original'] = base_dist
+                
+                # FORMULA: weight = dist * (1 + Score * MULT)
+                new_weight = base_dist * (1.0 + (edge_penalty * self.HAZARD_COST_MULT))
+                
+                self.graph[u][v]['weight'] = new_weight
+            
+            # RE-RUN DIJKSTRA (LOCAL REPAIR)
+            # Find the center of the hazard (cell with max penalty)
+            # (We already found current_max_penalty, but let's finding the ID)
+            hazard_center = None
+            max_p = -1
+            for cid in new_population:
+                if count > 0: # Check only occupied? Or all? 
+                    # We need the source of the penalty, which might be empty now but was high.
+                    # Let's iterate self.penalties for the true source
+                    pass 
+            
+            # Better: Iterate all penalties to find the "Epicenter"
+            # (Simplification: Use the node with highest combined score)
+            best_center = None
+            best_score = -1
+            
+            # Optimization: Only check nodes with non-zero dynamic penalties
+            # (Fire/Density/Smoke).
+            # If we don't have a specific center, we can fall back to global recompute.
+            # But the logic implies we found a max_occupied_penalty > 0.7.
+            # So let's find that specific cell again.
+            
+            for cid in self.graph.nodes:
+                p_dict = self.penalties[cid]
+                # Quick score check
+                # We need rho.
+                count = new_population.get(cid, 0)
+                area = self.cell_areas.get(cid, 60.0)
+                rho = count / area if area > 0 else 0.0
+                s = self.calculate_composite_score(cid, rho, p_dict['fire'])
+                if s > best_score:
+                    best_score = s
+                    best_center = cid
+            
+            if best_center is not None and best_score > 0.3:
+                # LOCAL REPAIR via ANCHORS
+                # Radius? Increased to 500m to catch distant junctions
+                RADIUS = 500.0 
+                # Identify which Field to repair? 
+                # Stage 2 uses 'self.dijkstra_distances' (from Safe Zones)
+                # If d_safe is INF, it uses 'self.dist_to_exit' (fallback).
+                # We mainly repair 'self.dijkstra_distances' (Safe Zone Flow).
+                
+                print(f"  > Running Anchor-Based Local Repair around Cell {best_center} (R={RADIUS}m)...")
+                
+                # We need the current dist map. 
+                # NOTE: self.dijkstra_distances might be incomplete if fallback was used.
+                # Let's ensure we are repairing the active field.
+                
+                target_field = self.dijkstra_distances
+                
+                updates = Dijkstra.calculate_dijkstra_repair(
+                    self.graph, best_center, RADIUS, target_field,
+                    sources=self.safe_zone_cells  # CRITICAL: Re-seed Safe Zones if inside radius
+                )
+                
+                # Apply updates
+                for n, new_d in updates.items():
+                    target_field[n] = new_d
+                    
+                print(f"  > Local Repair Complete. Updated {len(updates)} nodes.")
+                
+            else:
+                # Fallback to Global if no clear center (shouldn't happen with trigger)
+                print("  > Warning: No clear hazard center. Running Global Recompute.")
+                initial_costs = {}
+                for sz in self.safe_zone_cells:
+                    d = self.dist_to_exit.get(sz, float('inf'))
+                    initial_costs[sz] = d
+                    
+                if self.safe_zone_cells:
+                    self.dijkstra_distances, _ = Dijkstra.calculate_dijkstra_field(
+                        self.graph, self.safe_zone_cells, initial_costs=initial_costs
+                    )
+            
+            # Re-derive directions (PARTIAL UPDATE OPTIMIZATION)
+            # Only update nodes that were in the 'updates' set (plus neighbors?)
+            # Conservative: Update all, or update 'updates'.
+            # If we only update 'updates', we might miss neighbors flowing INTO updates.
+            # Safe Strategy: Update all nodes in affected zone + Rim.
+            
+            # For simplicity in this step, let's just re-derive directions for ALL 
+            # (Calculation is cheap compared to Dijkstra).
+            # Or use the Radius again.
+            
+            nodes_to_update = self.graph.nodes
+            if best_center is not None:
+                # Optimized: Only update directions for nodes in Radius + Buffer
+                nodes_to_update = []
+                c_pt = self.graph.nodes[best_center]['geometry'].centroid
+                UP_RAD = RADIUS + 20.0 # Buffer
+                for n in self.graph.nodes:
+                    if self.graph.nodes[n]['geometry'].centroid.distance(c_pt) <= UP_RAD:
+                        nodes_to_update.append(n)
+            
+            for node in nodes_to_update:
+                if node in self.exits_ids:
+                    self.directions[node] = None
+                    continue
+                
+                d_safe = self.dijkstra_distances.get(node, float('inf'))
+                source_field = self.dijkstra_distances if d_safe != float('inf') else self.dist_to_exit
+                
+                current_best = source_field.get(node, float('inf'))
+                best_neighbor = None
+                
+                for neighbor in self.graph.neighbors(node):
+                    d = source_field.get(neighbor, float('inf'))
+                    # Dijkstra field ALREADY accounts for weight.
+                    if d < current_best:
+                        current_best = d
+                        best_neighbor = neighbor
+                
+                self.directions[node] = best_neighbor
+
+
+            # Re-apply Safe Zone Overrides (They are static corridors)
+            if hasattr(self, 'safe_path_nodes'):
+                for path in self.safe_path_nodes:
+                    for i in range(len(path) - 1):
+                         self.directions[path[i]] = path[i+1]
+                         
+            self.last_reroute_time = self.time_step
 
         # 2. Movement
         for cid in self.graph.nodes:
@@ -721,7 +1058,24 @@ class MCASimulation:
             cap = self.max_capacities.get(cid, 300.0)
             
             rho_i = current_pop / area if area > 0 else 0
+            
+            # Base Speed (Density Dependent)
             v_i = self.V_FREE * np.exp(-rho_i / self.RHO_MAX)
+            
+            # --- HAZARD IMPEDANCE ---
+            # Calculate Environmental Penalty (Fire + Smoke + Debris + Obstruction)
+            # We ignore rho here because 'v_i' already accounts for density above.
+            p_dict = self.penalties.get(cid, {})
+            env_penalty = p_dict.get('fire', 0) + p_dict.get('debris', 0) + p_dict.get('smoke', 0)*0.5 + p_dict.get('temp_obj', 0)
+            
+            # Impedance Factor: Speed *= (1.0 - (Penalty * 0.55))
+            # User Request: "Do like 55%" (Interpret as 55% Slowdown Max)
+            # If Penalty=1.0, Speed=45% (They can squeeze through)
+            impedance = max(0.1, 1.0 - (env_penalty * 0.55))
+            
+            # Removed Hard Blockage logic (User found it too deadly)
+            
+            v_i *= impedance
             
             q_out = rho_i * v_i * self.CELL_WIDTH * self.DT
             
@@ -736,7 +1090,12 @@ class MCASimulation:
             new_population[cid] -= actual_flow
             new_population[target_id] += actual_flow
             
+            # Log Flow
+            if actual_flow > 0:
+                current_step_flows[(cid, target_id)] = current_step_flows.get((cid, target_id), 0) + actual_flow
+
         self.population = new_population
+        self.flow_history.append(current_step_flows)
         self.time_step += 1
         return sum(self.population.values())
 
@@ -793,7 +1152,33 @@ class MCASimulation:
                 'Cumulative Casualties': int(cas_count)
             })
             
+            # Add Penalty Stats if available
+            if hasattr(self, 'penalty_history') and t < len(self.penalty_history):
+                # penalty_history[t] is {cid: composite_score}
+                # Filter for non-zero entries to show actual hazard presence
+                p_scores = [v for v in self.penalty_history[t].values() if v > 0.0]
+                
+                time_data[-1]['Active Hazard Cells'] = len(p_scores)
+                time_data[-1]['Total Hazard Intensity'] = sum(p_scores)
+            else:
+                time_data[-1]['Active Hazard Cells'] = 0
+                time_data[-1]['Total Hazard Intensity'] = 0.0
+
         df_time = pd.DataFrame(time_data)
+        
+        # 5. Flow Logs (New Sheet)
+        # Convert list of dicts to DataFrame
+        flow_records = []
+        for t, flows in enumerate(self.flow_history):
+            for (u, v), count in flows.items():
+                flow_records.append({
+                    'Step': t,
+                    'Time (s)': t * self.DT,
+                    'From Cell': u,
+                    'To Cell': v,
+                    'Agent Count': float(f"{count:.2f}")
+                })
+        df_flow = pd.DataFrame(flow_records)
         
         cell_data = []
         for cid in self.road_cells['id']:
@@ -850,12 +1235,14 @@ class MCASimulation:
                     df_time.style.apply(color_columns, axis=0).to_excel(writer, sheet_name='Time Metrics', index=False)
                     df_cells.sort_values(by='Spatial Distribution (Casualties)', ascending=False).style.apply(color_columns, axis=0).to_excel(writer, sheet_name='Spatial Distribution', index=False)
                     df_exits.style.apply(color_columns, axis=0).to_excel(writer, sheet_name='Exit Usage', index=False)
+                    df_flow.to_excel(writer, sheet_name='Node Flow Logs', index=False) 
                     df_summary.style.apply(color_columns, axis=0).to_excel(writer, sheet_name='Summary', index=False)
                     print(f"✅ Simulation results saved to {filename} (Colored)")
                 except Exception:
                     df_time.to_excel(writer, sheet_name='Time Metrics', index=False)
                     df_cells.to_excel(writer, sheet_name='Spatial Distribution', index=False)
                     df_exits.to_excel(writer, sheet_name='Exit Usage', index=False)
+                    df_flow.to_excel(writer, sheet_name='Node Flow Logs', index=False)
                     df_summary.to_excel(writer, sheet_name='Summary', index=False)
                     print(f"✅ Simulation results saved to {filename} (Unstyled)")
 
@@ -864,17 +1251,98 @@ class MCASimulation:
 
     def run(self, steps=100):
         print(f"Starting simulation for {steps} steps...")
+        
+        # Record Initial State (Step 0)
+        # We need initial penalties/distances
+        initial_penalties = {}
+        for cid in self.graph.nodes:
+            # Re-calc initial scores
+            count = self.population.get(cid, 0)
+            area = self.cell_areas.get(cid, 60.0)
+            rho = count / area if area > 0 else 0.0
+            p_dict = self.penalties[cid]
+            initial_penalties[cid] = self.calculate_composite_score(cid, rho, p_dict['fire'])
+            
+        self.penalty_history.append(initial_penalties)
+        self.distance_history.append(self.dijkstra_distances.copy())
+        
+        # Randomize Hazard Start
+        import random
+        fire_start_time = random.randint(30, 40)
+        fire_locs = []
+        
+        # Pick 2 Random Cells explicitly NOT near Exts
+        valid_candidates = []
+        for cid in self.graph.nodes:
+            # Check dist to nearest exit
+            # We can use our computed dist_to_exit dict
+            d = self.dist_to_exit.get(cid, 0)
+            if d > 60.0: # At least 60m away from exit
+                valid_candidates.append(cid)
+        
+        print(f"DEBUG: Found {len(valid_candidates)} potential fire locations (>60m from exits).")
+
+        if valid_candidates:
+             # Pick ONLY 1 start location
+             fire_locs = random.sample(valid_candidates, 1)
+             print(f"-> Hazard Plan: Fire at Cells {fire_locs} at Step {fire_start_time}")
+        else:
+             print("!!! WARNING: No valid fire locations found! Fire will NOT start. Check distance map.")
+        
         for t in range(steps):
+            # INJECT HAZARD (RANDOMIZED)
+            if t == fire_start_time:
+                print(f"!!! HAZARD INJECTION: IGINTING FIRE AT {fire_locs} !!!")
+                for fid in fire_locs:
+                    if fid in self.penalties: 
+                        self.penalties[fid]['fire'] = random.uniform(0.7, 1.0)
+                
             total = self.step()
             self.history.append(self.population.copy())
             self.casualty_history.append(self.casualties)
             self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
             self.exit_usage_history.append(self.exit_usage.copy())
             
+            # ERA: Record Dynamic Fields
+            # 1. Penalties (HAZARD ONLY for Viz - Exclude Density)
+            current_penalties = {}
+            for cid in self.graph.nodes:
+                p_dict = self.penalties[cid]
+                # Pass rho=0 to ignore density component in the score for visualization
+                # This ensures we see FIRE/SMOKE/DEBRIS, not just crowd flow.
+                current_penalties[cid] = self.calculate_composite_score(cid, 0.0, p_dict['fire'])
+            self.penalty_history.append(current_penalties)
+            
+            # 2. Distances (Only changed if reroute happened, but store ref or copy?)
+            # Copy is safer for replay. Memory heavy? 
+            # 500 steps * 300 cells * float = Small.
+            self.distance_history.append(self.dijkstra_distances.copy())
+            
             if t % 10 == 0:
                 print(f"Step {t}: Agents: {total:.0f} | Dead: {self.casualties:.0f}")
             if total < 1:
                 break
+        
+        print("\n" + "="*40)
+        print(f"=== CASUALTY REPORT (Total: {self.casualties:.1f}) ===")
+        print("Breakdown by Cell:")
+        sorted_cells = sorted(self.casualties_per_cell.items(), key=lambda x: x[1], reverse=True)
+        count = 0
+        for cid, deaths in sorted_cells:
+            if deaths > 0:
+                area = self.cell_areas.get(cid, 0)
+                cap = self.max_capacities.get(cid, 0)
+                degree = len(list(self.graph.neighbors(cid))) if cid in self.graph else 0
+                print(f"  Cell {cid:>4}: {deaths:>6.1f} deaths | Area: {area:>5.1f}m2 | MaxCap: {cap:>5.1f} | Neighbors: {degree}")
+                count += 1
+        
+        if count == 0: print("  No casualties reported.")
+        print("="*40 + "\n")
+        
+        # Export Data
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.export_to_excel(filename=os.path.join(script_dir, "simulation_results_dijkstra_1.xlsx"))
         
         print("\n" + "="*40)
         print(f"=== CASUALTY REPORT (Total: {self.casualties:.1f}) ===")
@@ -954,14 +1422,15 @@ class MCASimulation:
         # Visualization for Casualties (Markers)
         # We use a scatter plot to show 'X' marks where deaths occur
         self.scat_casualties = ax.scatter([], [], marker='x', s=100, color='red', linewidth=2.0, zorder=30) 
+        # NEW: Scatter for Penalties (Orange Squares)
+        self.scat_penalties = ax.scatter([], [], marker='s', s=120, color='orange', alpha=0.6, zorder=35, label='Hazards') 
 
         def update_selection_text(frame_idx):
             # Correct for Phase 1 Offset
+            # Correct for Phase 1 Offset
             sim_frame = frame_idx
-            if hasattr(self, 'dijkstra_history'):
-                sim_frame = frame_idx - len(self.dijkstra_history)
-            
-            if sim_frame < 0: sim_frame = 0 # Clamp to start if in Phase 1
+            if sim_frame >= len(self.history):
+                 sim_frame = len(self.history) - 1
 
             if self.selected_exit_id is not None:
                 eid = self.selected_exit_id
@@ -1027,13 +1496,36 @@ class MCASimulation:
                     f"Occupancy: {ratio*100:.1f}%\n"
                     f"Status: {status}"
                 )
+                
+                selected_cell_text.set_text(
+                    f"Cell ID: {cid}\n"
+                    f"Pop: {p:.0f} / Cap: {c:.0f}\n"
+                    f"Occupancy: {ratio*100:.1f}%\n"
+                    f"Status: {status}"
+                )
             elif self.view_mode == 'dijkstra':
-                # Show Static Dist
-                d = self.dijkstra_distances.get(cid, float('inf'))
+                # Show Dynamic Dist
+                d_map = self.dijkstra_distances 
+                if sim_frame < len(self.distance_history):
+                    d_map = self.distance_history[sim_frame]
+                
+                d = d_map.get(cid, float('inf'))
                 d_str = f"{d:.1f}" if d != float('inf') else "Unreachable"
                 selected_cell_text.set_text(
                      f"Cell ID: {cid}\n"
-                     f"Exit Dist: {d_str}\n"
+                     f"Exit Dist: {d_str}m\n"
+                     f"(Dynamic @ T={sim_frame})"
+                )
+            elif self.view_mode == 'penalties':
+                # Show Penalty Score
+                score = 0
+                if sim_frame < len(self.penalty_history):
+                    score = self.penalty_history[sim_frame].get(cid, 0)
+                
+                selected_cell_text.set_text(
+                    f"Cell ID: {cid}\n"
+                    f"Penalty Score: {score:.3f}\n"
+                    f"(Max 0.95)"
                 )
             else:
                 if sim_frame < len(self.per_cell_casualty_history):
@@ -1112,8 +1604,8 @@ class MCASimulation:
 
             # Correct frame mapping
             sim_frame = frame
-            if hasattr(self, 'dijkstra_history'):
-                 sim_frame = frame - len(self.dijkstra_history)
+            if sim_frame >= len(self.history):
+                sim_frame = len(self.history) - 1
 
             pop_data = self.history[sim_frame]
             casualties = self.casualty_history[sim_frame]
@@ -1125,6 +1617,7 @@ class MCASimulation:
                  ax.set_title("Phase 2: Evacuation (Occupancy)", fontsize=14, fontweight='bold')
                  # Reset Scatter visibility
                  self.scat_casualties.set_visible(False)
+                 self.scat_penalties.set_visible(False)
 
                  collection.set_cmap('turbo')
                  
@@ -1140,67 +1633,198 @@ class MCASimulation:
                  # Dynamic Flow Arrows (Only where agents are)
                  if self.quiver: self.quiver.remove()
                  xq, yq, uq, vq = [], [], [], []
+                 
+                 # Get Dynamic Field for this frame
+                 d_map = self.dijkstra_distances # Default
+                 if hasattr(self, 'distance_history') and sim_frame < len(self.distance_history):
+                     d_map = self.distance_history[sim_frame]
+                 
                  for idx, count in pop_data.items():
                      if count > 1.0:
                           centroid = self.cell_centroids.get(idx)
-                          vec = self.flow_vectors.get(idx)
-                          if centroid and vec and vec != (0,0):
-                              xq.append(centroid.x)
-                              yq.append(centroid.y)
-                              uq.append(vec[0])
-                              vq.append(vec[1])
+                          
+                          # Compute vector dynamically from d_map
+                          vec = (0,0)
+                          
+                          # FIX: Use dist_to_exit for visual arrows so they point to EXIT, not SafeZone
+                          arrow_field = d_map
+                          if hasattr(self, 'dist_to_exit') and self.dist_to_exit:
+                              arrow_field = self.dist_to_exit
+                          
+                          curr_dist = arrow_field.get(idx, float('inf'))
+                          if curr_dist != float('inf'):
+                              # Find best neighbor
+                              best_n = None
+                              min_d = curr_dist
+                              for n in self.graph.neighbors(idx):
+                                  dn = arrow_field.get(n, float('inf'))
+                                  if dn < min_d:
+                                      min_d = dn
+                                      best_n = n
+                              
+                              if best_n:
+                                  cn = self.cell_centroids[best_n]
+                                  dx, dy = cn.x - centroid.x, cn.y - centroid.y
+                                  mag = (dx**2 + dy**2)**0.5
+                                  if mag > 0: vec = (dx/mag, dy/mag)
+
+                          if centroid and vec != (0,0):
+                               xq.append(centroid.x)
+                               yq.append(centroid.y)
+                               uq.append(vec[0])
+                               vq.append(vec[1])
+                               
                  if xq:
                      self.quiver = ax.quiver(xq, yq, uq, vq, scale=30, width=0.003, color='black', alpha=0.6, zorder=6)
                  else:
                      self.quiver = None
-
-            # 2. DIJKSTRA STATIC FIELD (The "Whole Map" View)
+ 
+            # 3. STATIC/DYNAMIC DIJKSTRA FIELD
             elif self.view_mode == 'dijkstra':
-                 ax.set_title("Static Dijkstra Field (Heatmap: Distance | Arrows: Gradient)", fontsize=14, fontweight='bold')
+                 ax.set_title(f"Dynamic Dijkstra Field (Time: {sim_frame}s)", fontsize=14, fontweight='bold')
                  self.scat_casualties.set_visible(False)
+                 self.scat_penalties.set_visible(False)
+                 
+                 # Fetch Historical Map
+                 d_map = self.dijkstra_distances
+                 if sim_frame is not None and sim_frame < len(self.distance_history):
+                     d_map = self.distance_history[sim_frame]
                  
                  # Show Distance Map
                  d_vals = []
                  max_d = 0
                  for idx in self.road_cells['id']:
-                      d = self.dijkstra_distances.get(idx, float('inf'))
+                      d = d_map.get(idx, float('inf'))
                       if d != float('inf'): max_d = max(max_d, d)
                       d_vals.append(d)
                  
-                 # Normalize (Inverse: Close=Bright, Far=Dark/Red)
+                 # Normalize (Inverse)
                  norm_vals = []
                  for d in d_vals:
                      if d == float('inf'): norm_vals.append(0)
                      else: 
-                         # Invert so Exits are Brightest
                          val = 1.0 - (d / max_d) if max_d > 0 else 0
                          norm_vals.append(val)
                  
                  collection.set_array(np.array(norm_vals))
-                 collection.set_cmap('magma') 
+                 
+                 # COLOR CYCLING: Change theme every 100s to show "New Phase"
+                 cycle_idx = int(sim_frame // 100)
+                 cmaps = ['magma', 'viridis', 'plasma', 'cividis', 'inferno']
+                 acc_cmap = cmaps[cycle_idx % len(cmaps)]
+                 
+                 collection.set_cmap(acc_cmap) 
                  collection.set_clim(0, 1.0)
+                 collection.changed() # FORCE UPDATE
                  
-                 # STATIC GLOBAL FLOW ARROWS (Quiver) - Shows "where flow is going"
-                 if self.quiver: self.quiver.remove()
+                 ax.set_title(f"Dynamic Dijkstra Field (Time: {sim_frame}s) | Phase {cycle_idx} ({acc_cmap})", fontsize=14, fontweight='bold')
                  
-                 # Subsample arrows to avoid clutter if too many cells
+                 if self.quiver: 
+                     self.quiver.remove()
+                 
+                 # DYNAMIC ARROWS: Compute new Flow Direction based on d_map
                  xq, yq, uq, vq = [], [], [], []
-                 count = 0
-                 for idx, (u, v) in self.global_flow_vectors.items():
-                     # Plot every cell's arrow? Or subsample?
-                     # Let's plot ALL for now, but maybe use thin arrows
-                     centroid = self.cell_centroids.get(idx)
-                     if centroid and (u != 0 or v != 0):
-                         xq.append(centroid.x)
-                         yq.append(centroid.y)
-                         uq.append(u)
-                         vq.append(v)
                  
+                 # Pre-compute Static Overrides (Safe Zone -> Exit)
+                 static_arrow_map = {}
+                 if hasattr(self, 'safe_path_nodes') and self.safe_path_nodes:
+                     for path in self.safe_path_nodes:
+                         for i in range(len(path) - 1):
+                             static_arrow_map[path[i]] = path[i+1]
+                 
+                 for idx in self.graph.nodes:
+                     if idx not in self.cell_centroids: continue
+                     
+                     # 1. CHECK SAFE ZONE OVERRIDE FIRST
+                     if idx in static_arrow_map:
+                         best_n = static_arrow_map[idx]
+                         if best_n is not None and best_n in self.cell_centroids:
+                             c_curr = self.cell_centroids[idx]
+                             c_next = self.cell_centroids[best_n]
+                             dx = c_next.x - c_curr.x
+                             dy = c_next.y - c_curr.y
+                             mag = (dx**2 + dy**2)**0.5
+                             if mag > 0:
+                                 xq.append(c_curr.x); yq.append(c_curr.y)
+                                 uq.append(dx/mag); vq.append(dy/mag)
+                             continue # Skip dynamic check
+                     
+                    
+                     # 2. DYNAMIC LOGIC (Fallback)
+                     # FIX: Use dist_to_exit for arrows so they always "look" like they point to exit
+                     # The Safe Zone logic is internal intent, but visual flow should be "To Safety"
+                     field_source = d_map # Default
+                     if hasattr(self, 'dist_to_exit') and self.dist_to_exit:
+                         field_source = self.dist_to_exit
+                     
+                     current_dist = field_source.get(idx, float('inf'))
+                     if current_dist == float('inf'): continue
+                     
+                     # Find best neighbor (lowest dist)
+                     best_n = None
+                     min_d = current_dist
+                     
+                     for n in self.graph.neighbors(idx):
+                         dn = field_source.get(n, float('inf')) # Use field_source here too
+                         if dn < min_d:
+                             min_d = dn
+                             best_n = n
+                     
+                     # If we found a downhill step
+                     if best_n is not None:
+                         c_curr = self.cell_centroids[idx]
+                         c_next = self.cell_centroids[best_n]
+                         
+                         dx = c_next.x - c_curr.x
+                         dy = c_next.y - c_curr.y
+                         # Normalize
+                         mag = (dx**2 + dy**2)**0.5
+                         if mag > 0:
+                             xq.append(c_curr.x)
+                             yq.append(c_curr.y)
+                             uq.append(dx/mag)
+                             vq.append(dy/mag)
+                             
                  if xq:
-                     # White arrows for visibility on Magma
-                     self.quiver = ax.quiver(xq, yq, uq, vq, scale=30, width=0.003, color='white', alpha=0.5, zorder=6)
+                     self.quiver = ax.quiver(xq, yq, uq, vq, scale=40, width=0.002, color='white', alpha=0.5, zorder=6)
                  else:
                      self.quiver = None
+
+            # 4. PENALTIES HEATMAP (NEW)
+            # 4. PENALTIES HEATMAP (NEW) -> MODIFIED TO SCATTER MARKERS
+            elif self.view_mode == 'penalties':
+                 ax.set_title(f"Hazard Penalties (Orange X) (T={sim_frame}s)", fontsize=14, fontweight='bold')
+                 self.scat_casualties.set_visible(False)
+                 if self.quiver: self.quiver.remove(); self.quiver = None
+                 
+                 # Clear Background Heatmap
+                 collection.set_array(None)
+                 collection.set_facecolors('whitesmoke')
+                 
+                 # Fetch Data
+                 p_map = {}
+                 if sim_frame < len(self.penalty_history):
+                     p_map = self.penalty_history[sim_frame]
+                
+                 # Filter for active hazards
+                 x_vals, y_vals, sizes = [], [], []
+                 for idx, val in p_map.items():
+                     if val > 0.01: # Threshold to filter clutter
+                         pt = self.cell_centroids.get(idx)
+                         if pt:
+                             x_vals.append(pt.x)
+                             y_vals.append(pt.y)
+                             # Size scales with penalty? or fixed?
+                             sizes.append(100 + val * 100)
+                             
+                 if x_vals:
+                     self.scat_penalties.set_offsets(np.column_stack([x_vals, y_vals]))
+                     self.scat_penalties.set_sizes(sizes)
+                     self.scat_penalties.set_visible(True)
+                 else:
+                     self.scat_penalties.set_visible(False)
+
+            # 5. CASUALTIES HEATMAP/MARKERS
 
             # 3. CASUALTIES
             # 3. CASUALTIES HEATMAP
@@ -1211,6 +1835,7 @@ class MCASimulation:
                      self.quiver = None
                  
                  ax.set_title("Phase 2: Casualty Locations (Red Markers)", fontsize=14, fontweight='bold')
+                 self.scat_penalties.set_visible(False)
                  
                  # 1. Reset Road Colors to Neutral (so we can see the network)
                  collection.set_array(None)
@@ -1305,23 +1930,35 @@ class MCASimulation:
         self.btn_casualty = Button(ax_btn, 'Casualties', color='salmon', hovercolor='red')
         
         # 3rd Button: DIJKSTRA
-        ax_btn_aco = plt.axes([0.65, 0.04, 0.12, 0.04])
-        self.btn_dijkstra = Button(ax_btn_aco, 'Show Dijkstra', color='lightblue', hovercolor='cyan')
+        # 3rd Button: DIJKSTRA
+        ax_btn_dijk = plt.axes([0.65, 0.04, 0.12, 0.04])
+        self.btn_dijkstra = Button(ax_btn_dijk, 'Dijkstra', color='lightblue', hovercolor='cyan')
+
+        # 4th Button: PENALTIES (NEW)
+        ax_btn_pen = plt.axes([0.78, 0.04, 0.12, 0.04])
+        self.btn_penalty = Button(ax_btn_pen, 'Penalties', color='#FFA500', hovercolor='#FFD700')
 
         def set_view_mode(mode):
             self.view_mode = mode
             self.btn_casualty.color = 'salmon'
-            self.btn_casualty.label.set_text('Casualties')
             self.btn_dijkstra.color = 'lightblue'
+            self.btn_penalty.color = '#FFA500' # Orange
             
             if mode == 'casualties':
                 self.btn_casualty.color = 'red' 
                 ax.set_title("Total Casualties Heatmap", fontsize=14, fontweight='bold')
                 cbar.set_label('Total Casualties')
+                
             elif mode == 'dijkstra':
                 self.btn_dijkstra.color = 'cyan' 
-                ax.set_title("Static Dijkstra Distance Field", fontsize=14, fontweight='bold')
-                cbar.set_label('Proximity to Exit (Bright=Close)')
+                ax.set_title("Dynamic Dijkstra Field", fontsize=14, fontweight='bold')
+                cbar.set_label('Proximity/Safety (Bright=Safe)')
+                
+            elif mode == 'penalties':
+                self.btn_penalty.color = '#FF4500' # Dark Orange
+                ax.set_title("Hazard Penalties", fontsize=14, fontweight='bold')
+                cbar.set_label('Penalty Score (0.0 - 1.0)')
+                
             else: 
                 ax.set_title("USTP Evacuation (Per-Cell Capacity Analysis)", fontsize=14, fontweight='bold')
                 cbar.set_label('Occupancy Ratio (Population / Capacity)')
@@ -1330,19 +1967,20 @@ class MCASimulation:
             fig.canvas.draw_idle()
 
         def toggle_casualty(event):
-            if self.view_mode == 'casualties':
-                set_view_mode('occupancy')
-            else:
-                set_view_mode('casualties')
+            if self.view_mode == 'casualties': set_view_mode('occupancy')
+            else: set_view_mode('casualties')
                 
         def toggle_dijkstra(event):
-            if self.view_mode == 'dijkstra':
-                set_view_mode('occupancy')
-            else:
-                set_view_mode('dijkstra')
+            if self.view_mode == 'dijkstra': set_view_mode('occupancy')
+            else: set_view_mode('dijkstra')
+            
+        def toggle_penalty(event):
+            if self.view_mode == 'penalties': set_view_mode('occupancy')
+            else: set_view_mode('penalties')
             
         self.btn_casualty.on_clicked(toggle_casualty)
         self.btn_dijkstra.on_clicked(toggle_dijkstra)
+        self.btn_penalty.on_clicked(toggle_penalty)
 
         def toggle_pause(event):
             if self.anim.event_source:
@@ -1390,6 +2028,8 @@ class MCASimulation:
 
         def on_motion(event):
             if self.pan_start is None or event.inaxes != ax: return
+            if event.xdata is None or event.ydata is None: return
+            
             dx = event.xdata - self.pan_start[0]
             dy = event.ydata - self.pan_start[1]
             cur_xlim = ax.get_xlim()
@@ -1441,8 +2081,8 @@ class MCASimulation:
         fig.canvas.mpl_connect('scroll_event', on_scroll)
         
         total_frames = len(self.history)
-        if hasattr(self, 'dijkstra_history'):
-             total_frames += len(self.dijkstra_history)
+        total_frames = len(self.history)
+        # (Removed garbage offset logic)
 
         self.anim = FuncAnimation(fig, update, frames=total_frames, interval=100, blit=False, repeat=False)
         

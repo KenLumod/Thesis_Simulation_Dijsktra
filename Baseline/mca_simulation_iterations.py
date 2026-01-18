@@ -41,7 +41,7 @@ class MCASimulation:
         self.cell_areas = {}   # cell_id -> area (float)
         
         # Stampede Logic
-        self.STAMPEDE_DENSITY = 4.0 # p/m^2 (Lowered from 4.5 to increase sensitivity)
+        self.STAMPEDE_DENSITY = 3.5 # p/m^2 (Lowered from 4.5 to increase sensitivity)
         self.DEATH_RATE = 0.1 # 10% per second if overcrowded
         
         # State

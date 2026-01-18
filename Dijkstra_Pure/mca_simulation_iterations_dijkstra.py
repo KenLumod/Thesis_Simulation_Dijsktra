@@ -43,7 +43,7 @@ class MCASimulation:
         self.cell_areas = {}   # cell_id -> area (float)
         
         # Stampede Logic
-        self.STAMPEDE_DENSITY = 3.5 # p/m^2 (Lowered from 4.0) (Lowered from 4.5 to increase sensitivity)
+        self.STAMPEDE_DENSITY = 3.5 # p/m^2 (Lowered from 4.5 to increase sensitivity)
         self.DEATH_RATE = 0.1 # 10% per second if overcrowded
         
         # State
@@ -64,28 +64,6 @@ class MCASimulation:
         # Viz Data
         self.cell_centroids = {}
         self.flow_vectors = {} # cell_idx -> (u, v)
-        
-        # ----------------------------------------------------------------
-        # HAZARD-AWARE DIJKSTRA PARAMETERS
-        # ----------------------------------------------------------------
-        # 1. Weights (Influence on Routing)
-        self.W_FIRE = 1.0
-        self.W_SMOKE = 0.8
-        self.W_DENSITY = 0.6
-        self.W_DEBRIS = 0.4
-        self.W_TERRAIN = 0.2
-        self.W_TEMP_OBJ = 0.2
-        
-        # 2. Dynamics
-        self.HAZARD_COST_MULT = 10.0
-        self.REROUTE_THRESHOLD = 0.7
-        self.REROUTE_COOLDOWN = 5
-        self.last_reroute_time = -999
-        
-        # 3. State
-        self.penalties = {} 
-        self.current_max_penalty = 0.0
-        self.burnt_cells = set() # Track cells that have peaked/decayed
 
     def load_data(self):
         print(f"Loading data from {self.gpkg_path}...")
@@ -143,15 +121,11 @@ class MCASimulation:
             
             if target_layer in layers:
                 self.exits = gpd.read_file(self.gpkg_path, layer=target_layer)
-                print(f"Loaded {len(self.exits)} sink nodes (exits) from layer '{target_layer}'.")
-            
-            # Safe Zones (New)
-            self.safe_zones = None
-            if 'safe_zones' in layers:
-                self.safe_zones = gpd.read_file(self.gpkg_path, layer='safe_zones')
-                print(f"Loaded {len(self.safe_zones)} Safe Zones from layer 'safe_zones'.")
-            else:
-                print("WARNING: 'safe_zones' layer not found!")
+            elif 'safe_zones' in layers:
+                self.exits = gpd.read_file(self.gpkg_path, layer='safe_zones')
+                
+            if self.exits is not None:
+                print(f"Loaded {len(self.exits)} sink nodes (exits) from layer '{target_layer if target_layer in layers else 'safe_zones'}'.")
 
         except Exception as e:
             print(f"Error loading layers: {e}")
@@ -207,12 +181,6 @@ class MCASimulation:
             # Initialize tracker
             self.casualties_per_cell[cid] = 0.0
             
-            # Initialize Penalties
-            self.penalties[cid] = {
-                'fire': 0.0, 'smoke': 0.0, 'debris': 0.0, 
-                'terrain': 0.0, 'temp': 0.0
-            }
-            
         for idx_left, row in joins.iterrows():
             id_l = self.road_cells.iloc[idx_left]['id']
             id_r = self.road_cells.iloc[row['index_right']]['id']
@@ -243,270 +211,90 @@ class MCASimulation:
         print("!!! SCENARIO APPLIED: Agents will re-route around these cells. !!!\n")
 
     def compute_flow_directions(self):
-        print("Computing flow directions (SAFE ZONE MODE)...")
-        
+        print("Computing flow directions (Pure Dijkstra Mode)...")
         # 1. Map Road Cells to Exits
         exit_indices = []
+        
         if self.exits is not None:
+            # Initialize all exits
             for idx, row in self.exits.iterrows():
                 self.exit_status[idx] = 'CLOSED'
                 self.exit_usage[idx] = 0.0
+                
+                # Check specific intersection for this exit
+                # Using 5.0m buffer
                 exit_geo = row.geometry.buffer(5.0)
-                connected = []
+                connected_cells = []
+                
                 for r_idx, cell in self.road_cells.iterrows():
                     if exit_geo.intersects(cell.geometry):
                         cid = cell['id']
-                        connected.append(cid)
+                        connected_cells.append(cid)
+                        # Map road cell to this Exit ID
+                        # Note: If cell connects to multiple, last one wins (acceptable approx)
                         self.road_to_exit[cid] = idx
                 
-                if connected:
+                if connected_cells:
                     self.exit_status[idx] = 'OPEN'
-                    exit_indices.extend(connected)
+                    exit_indices.extend(connected_cells)
+                    print(f"DEBUG: Exit {idx} is OPEN (Connected to {len(connected_cells)} cells)")
+                else:
+                    self.exit_status[idx] = 'CLOSED'
+                    print(f"DEBUG: Exit {idx} is CLOSED")
 
         if not exit_indices:
-            print("WARNING: No exits connected. Using fallback.")
+            # Fallback
+            print("WARNING: No exits connected. Using fallback (West bounds).")
             min_x = self.road_cells.bounds.minx.min()
             ids = self.road_cells[self.road_cells.bounds.minx < min_x + 10]['id'].tolist()
             exit_indices = ids
+            # Assign fallback ID
             for i in ids: self.road_to_exit[i] = 999 
 
+        # Store exit_indices for reference
         self.exits_ids = exit_indices
-        valid_exits = [e for e in self.exits_ids if e in self.graph]
-        
-        # 2. Map Road Cells to Safe Zones & Boost Capacity
-        safe_indices = []
-        if self.safe_zones is not None:
-             sz_buf = self.safe_zones.copy()
-             sz_buf.geometry = sz_buf.geometry.buffer(2.0)
-             
-             for idx, cell in self.road_cells.iterrows():
-                 if sz_buf.intersects(cell.geometry).any():
-                     cid = cell['id']
-                     safe_indices.append(cid)
-                     # Boost Capacity
-                     if cid in self.max_capacities:
-                         self.max_capacities[cid] *= 4.0
-                         self.capacities[cid] *= 4.0 # Visual safe cap too
-        
-        valid_safe = [s for s in safe_indices if s in self.graph]
-        self.safe_zone_cells = set(valid_safe)
-        print(f"Mapped {len(valid_safe)} Safe Zone cells. Capacity Boosted x4.")
-
-        if not valid_exits:
-             print("❌ No reachable exits!")
-             return
 
         # ------------------------------------------------------------------------
-        # STAGE 1: Dijkstra from EXITS (To know dist from SafeZone to Exit)
+        # DIJKSTRA SOLVER CALL (Replaces ACO)
         # ------------------------------------------------------------------------
-        print("DEBUG: Checking Exit Connectivity (BFS)...")
-        for ex in valid_exits:
-            reachable = 0
-            q = [ex]
-            seen = {ex}
-            while q:
-                curr = q.pop(0)
-                reachable += 1
-                for n in self.graph.neighbors(curr):
-                    if n not in seen:
-                        seen.add(n)
-                        q.append(n)
-            
-            fid = self.road_to_exit.get(ex, 'UNK')
-            status = "ISOLATED/BLOCKED" if reachable < 5 else f"OK ({reachable} nodes)"
-            print(f"  Exit Node {ex} (FID {fid}): {status}")
-
-        print("DEBUG: Running Forensic Distance Audit (Safe Zone -> Per Exit)...")
-        fid_exits = {}
-        for ex in valid_exits:
-            fid = self.road_to_exit.get(ex, 'UNK')
-            if fid not in fid_exits: fid_exits[fid] = []
-            fid_exits[fid].append(ex)
+        print(f"Using Dijkstra Solver from {len(exit_indices)} exit nodes...")
+        distances, history = Dijkstra.calculate_dijkstra_field(self.graph, exit_indices)
         
-        sz_audit = {sz: {} for sz in valid_safe}
-        
-        for fid, nodes in fid_exits.items():
-            d_field, _ = Dijkstra.calculate_dijkstra_field(self.graph, nodes)
-            for sz in valid_safe:
-                dist = d_field.get(sz, float('inf'))
-                sz_audit[sz][fid] = dist
-                
-        print("\n=== SAFE ZONE DISTANCE AUDIT ===")
-        print(f"{'SZ_ID':<8} | {'BEST_EXIT (FID)':<20} | {'DISTANCES (m)'}")
-        for sz in valid_safe:
-            best_fid = None
-            best_d = float('inf')
-            dist_strs = []
-            for fid, d in sz_audit[sz].items():
-                d_str = f"{d:.1f}" if d != float('inf') else "INF"
-                dist_strs.append(f"FID{fid}: {d_str}")
-                if d < best_d:
-                    best_d = d
-                    best_fid = fid
-            
-            print(f"{sz:<8} | {f'FID {best_fid} ({best_d:.1f}m)':<20} | {', '.join(dist_strs)}")
-        print("================================\n")
-
-        print("Stage 1: Computing Separate Dijkstra Fields for Each Exit...")
-        
-        self.exit_fields = {}
-        
-        for fid, nodes in fid_exits.items():
-            print(f"  > Computing Field for Exit FID {fid} (Nodes: {nodes})...")
-            d, v = Dijkstra.calculate_dijkstra_field(self.graph, nodes)
-            self.exit_fields[fid] = {'distances': d, 'visited': v}
-            
-        self.dist_to_exit = {}
-        all_visited = [] 
-        
-        for fid in self.exit_fields:
-            all_visited.extend(self.exit_fields[fid]['visited'])
-            d_map = self.exit_fields[fid]['distances']
-            for n, dist in d_map.items():
-                cur = self.dist_to_exit.get(n, float('inf'))
-                if dist < cur:
-                    self.dist_to_exit[n] = dist
-        
-        # ------------------------------------------------------------------------
-        # TRACE PATHS & ASSIGN SAFE ZONES (FORCED LOAD BALANCING)
-        # ------------------------------------------------------------------------
-        self.safe_paths = []
-        self.safe_path_nodes = []
-        print("\n=== SAFE ZONE ASSIGNMENT (ROUND ROBIN BALANCING) ===")
-        
-        exit_counts = {fid: 0 for fid in fid_exits}
-        available_fids = sorted(list(fid_exits.keys()))
-        
-        for i, sz in enumerate(valid_safe):
-            assigned_fid = None
-            assigned_dist = float('inf')
-            
-            start_index = i % len(available_fids)
-            
-            for offset in range(len(available_fids)):
-                idx = (start_index + offset) % len(available_fids)
-                fid = available_fids[idx]
-                
-                data = self.exit_fields[fid]
-                d = data['distances'].get(sz, float('inf'))
-                
-                if d != float('inf'):
-                    assigned_fid = fid
-                    assigned_dist = d
-                    break 
-            
-            if assigned_fid is None:
-                print(f"  ⚠️ SZ {sz} -> Unreachable from ANY exit!")
-                continue
-                
-            best_fid = assigned_fid
-            best_dist = assigned_dist
-            exit_counts[best_fid] += 1
-            
-            # TRACE PATH
-            target_field = self.exit_fields[best_fid]['distances']
-            target_exits = fid_exits[best_fid]
-            
-            path = [sz]
-            curr = sz
-            dist = best_dist
-            
-            for _ in range(300):
-                if curr in target_exits: break
-                
-                best_n = None
-                best_d = dist
-                
-                for n in self.graph.neighbors(curr):
-                    d = target_field.get(n, float('inf')) 
-                    if d < best_d:
-                        best_d = d
-                        best_n = n
-                        
-                if best_n is not None:
-                    curr = best_n
-                    dist = best_d
-                    path.append(curr)
-                else: break
-            
-            if len(path) > 1 and path[-1] in target_exits:
-                 self.safe_path_nodes.append(path)
-                 print(f"  SZ {sz} -> FORCED to Exit FID {best_fid} (Dist: {best_dist:.1f}m)")
-            else:
-                 print(f"  ⚠️ SZ {sz} -> Path Trace Failed for FID {best_fid}")
-
-        print(f"Assignment Summary: {exit_counts}")
-        
-        # ------------------------------------------------------------------------
-        # STAGE 2: Dijkstra from SAFE ZONES
-        # ------------------------------------------------------------------------
-        print("Stage 2: Computing Path via Safe Zones...")
-        
-        initial_costs = {}
-        for sz in valid_safe:
-            d = self.dist_to_exit.get(sz, float('inf'))
-            if d != float('inf'):
-                initial_costs[sz] = d
-            else:
-                initial_costs[sz] = float('inf') 
-        
-        if not valid_safe:
-            print("⚠️ NO SAFE ZONES MAPPED! Reverting to direct Exit routing.")
-            self.dijkstra_distances = self.dist_to_exit
-        else:
-            self.dijkstra_distances, _ = Dijkstra.calculate_dijkstra_field(
-                self.graph, valid_safe, initial_costs=initial_costs
-            )
-
-        # Derive Flow Directions
+        # Derive Flow Directions (Gradient Descent)
         self.directions = {}
         for node in self.graph.nodes:
             if node in exit_indices:
-                self.directions[node] = None
+                self.directions[node] = None 
                 continue
-                
-            # Hybrid Logic
-            d_safe = self.dijkstra_distances.get(node, float('inf'))
-            if d_safe != float('inf'):
-                 source_field = self.dijkstra_distances
-            else:
-                 source_field = self.dist_to_exit
             
-            min_dist = source_field.get(node, float('inf'))
-            current_best = min_dist
             best_neighbor = None
+            min_dist = distances.get(node, float('inf'))
+            current_best_dist = min_dist
             
             for neighbor in self.graph.neighbors(node):
-                d = source_field.get(neighbor, float('inf'))
-                if d < current_best:
-                    current_best = d
+                d = distances.get(neighbor, float('inf'))
+                if d < current_best_dist:
+                    current_best_dist = d
                     best_neighbor = neighbor
             
             self.directions[node] = best_neighbor
         
-        # OVERRIDE: BRIDGE SAFE ZONES TO EXITS
-        if hasattr(self, 'safe_path_nodes'):
-            print("Applying Safe Zone Path Overrides...")
-            for path in self.safe_path_nodes:
-                for i in range(len(path) - 1):
-                    self.directions[path[i]] = path[i+1]
-        
         # Pre-calc flow vectors
         self.flow_vectors = {}
         for idx in self.graph.nodes:
-             target_idx = self.directions.get(idx)
-             if target_idx is not None and target_idx in self.cell_centroids:
-                 start = self.cell_centroids[idx]
-                 end = self.cell_centroids[target_idx]
-                 dx = end.x - start.x
-                 dy = end.y - start.y
-                 norm = np.hypot(dx, dy)
-                 if norm > 0:
-                     dx /= norm
-                     dy /= norm
-                 self.flow_vectors[idx] = (dx, dy)
-             else:
-                 self.flow_vectors[idx] = (0, 0)
+            target_idx = self.directions.get(idx)
+            if target_idx is not None and target_idx in self.cell_centroids:
+                start = self.cell_centroids[idx]
+                end = self.cell_centroids[target_idx]
+                dx = end.x - start.x
+                dy = end.y - start.y
+                norm = np.hypot(dx, dy)
+                if norm > 0:
+                    dx /= norm
+                    dy /= norm
+                self.flow_vectors[idx] = (dx, dy)
+            else:
+                self.flow_vectors[idx] = (0, 0)
     
     def initialize_population(self, total_agents=5000):
         self.total_agents_init = total_agents
@@ -553,96 +341,13 @@ class MCASimulation:
         self.per_cell_casualty_history = [] # RESET
         self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
 
-
-
-    def calculate_composite_score(self, cid, rho, fire_val):
-        """
-        Computes clamped composite penalty score for a cell.
-        S = min(0.95, weighted_sum)
-        """
-        p = self.penalties.get(cid)
-        if not p: return 0.0
-
-        val_density = min(1.0, rho / self.STAMPEDE_DENSITY) if self.STAMPEDE_DENSITY > 0 else 0
-        
-        val_fire = min(1.0, p['fire'])
-        val_smoke = min(1.0, p['smoke'])
-        val_debris = min(1.0, p['debris'])
-        val_terrain = min(1.0, p['terrain'])
-        val_temp = min(1.0, p['temp'])
-        
-        w_sum = (val_fire * self.W_FIRE) + \
-                (val_smoke * self.W_SMOKE) + \
-                (val_density * self.W_DENSITY) + \
-                (val_debris * self.W_DEBRIS) + \
-                (val_terrain * self.W_TERRAIN) + \
-                (val_temp * self.W_TEMP_OBJ)
-                
-        return min(0.95, w_sum)
-
-    def update_penalties(self):
-        """
-        Decay dynamics for transient penalties.
-        Fire/Terrain do NOT decay here (managed by event/static).
-        """
-        # Decay Rates
-        DECAY_SMOKE = 0.03  # Faster Decay (was 0.01)
-        DECAY_DEBRIS = 0.01 # Faster Decay (was 0.005)
-        DECAY_TEMP = 0.1
-        
-        for cid, p_dict in self.penalties.items():
-            # Decay
-            if p_dict['smoke'] > 0:
-                p_dict['smoke'] = max(0.0, p_dict['smoke'] - DECAY_SMOKE)
-            if p_dict['debris'] > 0:
-                p_dict['debris'] = max(0.0, p_dict['debris'] - DECAY_DEBRIS)
-            if p_dict['temp'] > 0:
-                p_dict['temp'] = max(0.0, p_dict['temp'] - DECAY_TEMP)
-            
-            # Fire Logic (Simple Propagation with Lifecycle)
-            import random
-            if p_dict['fire'] > 0:
-                if cid in self.burnt_cells:
-                    # DECAY PHASE
-                    # User Request: "Decay is WAY too slow" -> Increased to 0.03
-                    p_dict['fire'] = max(0.0, p_dict['fire'] - 0.03)
-                    if p_dict['fire'] == 0:
-                        self.burnt_cells.remove(cid)
-                else:
-                    # GROWTH PHASE
-                    if p_dict['fire'] < 1.0:
-                        p_dict['fire'] = min(1.0, p_dict['fire'] + 0.01) # Slower Growth (was 0.05)
-                    else:
-                        # Reached Peak -> Start Burnout (Switch to Decay)
-                        # Increased burnout chance to 10% (So it actually dies out)
-                        if random.random() < 0.10: 
-                             self.burnt_cells.add(cid)
-                
-                # ADJUSTED: Threshold 0.2, Chance 5% (Very Slow Spread, contained)
-                if p_dict['fire'] > 0.2 and cid not in self.burnt_cells:
-                    neighbors = list(self.graph.neighbors(cid))
-                    for n in neighbors:
-                         # 5% chance to ignite neighbor (reliable spread, but slow growth)
-                         if self.penalties[n]['fire'] == 0 and random.random() < 0.05:
-                             self.penalties[n]['fire'] = 0.1 # Start VERY small (needs ~10 steps to become dangerous)
-                             # Also add smoke
-                             self.penalties[n]['smoke'] = 0.6
-
     def step(self):
-        # 0. Update Dynamics
-        self.update_penalties()
-
-
         new_population = self.population.copy()
         total_deaths_this_step = 0
         
         # 1. Check for Stampedes (Apply Grace Period of 10 steps)
         if self.time_step > 10:
             for cid, count in self.population.items():
-                # SAFE ZONE IMMUNITY: No casualties in Safe Zones/Refuge Areas
-                if hasattr(self, 'safe_zone_cells') and cid in self.safe_zone_cells:
-                    continue
-
                 area = self.cell_areas.get(cid, 60.0)
                 rho = count / area if area > 0 else 0
                 
@@ -654,134 +359,6 @@ class MCASimulation:
                     self.casualties_per_cell[cid] = self.casualties_per_cell.get(cid, 0) + deaths
         
         self.casualties += total_deaths_this_step
-
-        self.casualties += total_deaths_this_step
-
-        # 1.5 HAZARD-AWARE REROUTE CHECK
-        # --------------------------------------------------------
-        max_occupied_penalty = 0.0
-        
-        for cid, count in new_population.items():
-            if count > 0:
-                area = self.cell_areas.get(cid, 60.0)
-                rho = count / area
-                fire_val = self.penalties[cid]['fire']
-                
-                score = self.calculate_composite_score(cid, rho, fire_val)
-                if score > max_occupied_penalty:
-                    max_occupied_penalty = score
-        
-        self.current_max_penalty = max_occupied_penalty
-        
-        if (max_occupied_penalty > self.REROUTE_THRESHOLD) and \
-           (self.time_step - self.last_reroute_time > self.REROUTE_COOLDOWN):
-            
-            # UPDATE GRAPH WEIGHTS
-            for u, v, data in self.graph.edges(data=True):
-                p_u = self.penalties[u]
-                p_v = self.penalties[v]
-                
-                pop_u = new_population.get(u, 0)
-                pop_v = new_population.get(v, 0)
-                area_u = self.cell_areas.get(u, 60.0)
-                rho_u = pop_u / area_u if area_u > 0 else 0.0
-                
-                area_v = self.cell_areas.get(v, 60.0)
-                rho_v = pop_v / area_v if area_v > 0 else 0.0
-                
-                score_u = self.calculate_composite_score(u, rho_u, p_u['fire'])
-                score_v = self.calculate_composite_score(v, rho_v, p_v['fire'])
-                
-                edge_penalty = max(score_u, score_v)
-                
-                # Base Distance (Geometry)
-                base_dist = data.get('weight_original', data['weight'])
-                if 'weight_original' not in data:
-                    data['weight_original'] = base_dist
-                
-                new_weight = base_dist * (1.0 + (edge_penalty * self.HAZARD_COST_MULT))
-                
-                self.graph[u][v]['weight'] = new_weight
-            
-            # RE-RUN DIJKSTRA (LOCAL REPAIR)
-            # Find the center of the hazard (cell with max penalty)
-            best_center = None
-            best_score = -1
-            
-            for cid in self.graph.nodes:
-                p_dict = self.penalties[cid]
-                count = new_population.get(cid, 0)
-                area = self.cell_areas.get(cid, 60.0)
-                rho = count / area if area > 0 else 0.0
-                s = self.calculate_composite_score(cid, rho, p_dict['fire'])
-                if s > best_score:
-                    best_score = s
-                    best_center = cid
-            
-            if best_center is not None and best_score > 0.3:
-                # LOCAL REPAIR via ANCHORS
-                RADIUS = 500.0 
-                
-                target_field = self.dijkstra_distances
-                
-                updates = Dijkstra.calculate_dijkstra_repair(
-                    self.graph, best_center, RADIUS, target_field
-                )
-                
-                # Apply updates
-                for n, new_d in updates.items():
-                    target_field[n] = new_d
-                
-            else:
-                # Fallback to Global
-                initial_costs = {}
-                for sz in self.safe_zone_cells:
-                    d = self.dist_to_exit.get(sz, float('inf'))
-                    initial_costs[sz] = d
-                    
-                if self.safe_zone_cells:
-                    self.dijkstra_distances, _ = Dijkstra.calculate_dijkstra_field(
-                        self.graph, self.safe_zone_cells, initial_costs=initial_costs
-                    )
-            
-            # Re-derive directions (PARTIAL UPDATE OPTIMIZATION)
-            nodes_to_update = self.graph.nodes
-            if best_center is not None:
-                # Optimized: Only update directions for nodes in Radius + Buffer
-                nodes_to_update = []
-                c_pt = self.graph.nodes[best_center]['geometry'].centroid
-                UP_RAD = RADIUS + 20.0
-                for n in self.graph.nodes:
-                    if self.graph.nodes[n]['geometry'].centroid.distance(c_pt) <= UP_RAD:
-                        nodes_to_update.append(n)
-            
-            for node in nodes_to_update:
-                if node in self.exits_ids:
-                    self.directions[node] = None
-                    continue
-                
-                d_safe = self.dijkstra_distances.get(node, float('inf'))
-                source_field = self.dijkstra_distances if d_safe != float('inf') else self.dist_to_exit
-                
-                current_best = source_field.get(node, float('inf'))
-                best_neighbor = None
-                
-                for neighbor in self.graph.neighbors(node):
-                    d = source_field.get(neighbor, float('inf'))
-                    # Dijkstra field ALREADY accounts for weight.
-                    if d < current_best:
-                        current_best = d
-                        best_neighbor = neighbor
-                
-                self.directions[node] = best_neighbor
-
-            # Re-apply Safe Zone Overrides
-            if hasattr(self, 'safe_path_nodes'):
-                for path in self.safe_path_nodes:
-                    for i in range(len(path) - 1):
-                         self.directions[path[i]] = path[i+1]
-                         
-            self.last_reroute_time = self.time_step
 
         # 2. Movement
         for cid in self.graph.nodes:
@@ -835,46 +412,139 @@ class MCASimulation:
         self.time_step += 1
         return sum(self.population.values())
 
+    def export_to_excel(self, filename="simulation_results_dijkstra_2.xlsx"):
+        print(f"Exporting results to {filename}...")
+        
+        # 1. Time Series Data (Step-by-Step)
+        time_data = []
+        
+        # Pre-calculate cell parameters for speed calc
+        cell_params = {}
+        for idx, row in self.road_cells.iterrows():
+            cid = row['id']
+            area = self.cell_areas.get(cid, 60.0)
+            cell_params[cid] = area
+
+        for t, (pop_map, cas_count) in enumerate(zip(self.history, self.casualty_history)):
+            # Global Stats
+            total_alive = sum(pop_map.values())
+            
+            # Avg Density & Speed Estimate
+            total_weighted_speed = 0
+            total_density = 0
+            occupied_cells = 0
+            
+            max_rho = 0
+            
+            for cid, count in pop_map.items():
+                if count > 0:
+                    area = cell_params.get(cid, 60.0)
+                    rho = count / area
+                    
+                    # Fundamental Diagram (Greenshields)
+                    # v = v_free * (1 - rho/rho_max)
+                    # Clamped at 0
+                    v_ratio = max(0.0, 1.0 - (rho / self.RHO_MAX))
+                    speed = self.V_FREE * v_ratio
+                    
+                    total_weighted_speed += speed * count
+                    total_density += rho
+                    occupied_cells += 1
+                    
+                    if rho > max_rho: max_rho = rho
+            
+            avg_speed = (total_weighted_speed / total_alive) if total_alive > 0 else 0
+            avg_density = (total_density / occupied_cells) if occupied_cells > 0 else 0
+            
+            # Exit Flow Rate (Agents per step)
+            # Flow = Current Usage - Previous Usage
+            current_usage = self.exit_usage_history[t] if t < len(self.exit_usage_history) else self.exit_usage
+            if t > 0:
+                prev_usage = self.exit_usage_history[t-1]
+                flow_step = sum(current_usage.values()) - sum(prev_usage.values())
+            else:
+                flow_step = 0
+                
+            time_data.append({
+                'Time (s)': t * self.DT,
+                'Exit Flow Rate': int(flow_step), # Round to int
+                'Remaining Evacuees': int(total_alive), # Round to int
+                'Density Evolution': avg_density,
+                'Velocity of Evacuees': avg_speed,
+                # Extra internal metrics kept for utility but renamed if needed
+                'Peak Density': max_rho, 
+                'Cumulative Casualties': int(cas_count) # Round to int
+            })
+            
+        df_time = pd.DataFrame(time_data)
+        
+        # 2. Spatial Distribution (Cell Analysis)
+        cell_data = []
+        for cid in self.road_cells['id']:
+            final_deaths = self.casualties_per_cell.get(cid, 0)
+            area = self.cell_areas.get(cid, 60.0)
+            cap = self.max_capacities.get(cid, 0)
+            
+            cell_data.append({
+                'Cell ID': cid,
+                'Spatial Distribution (Casualties)': int(final_deaths), # Round to int
+                'Area': area,
+                'Status': 'BLOCKED' if cid in self.blocked_cells else 'OPEN'
+            })
+        df_cells = pd.DataFrame(cell_data).sort_values(by='Spatial Distribution (Casualties)', ascending=False)
+        
+        # 3. Exit Usage Distribution
+        exit_data = []
+        for eid, count in self.exit_usage.items():
+            status = self.exit_status.get(eid, 'UNKNOWN')
+            exit_data.append({
+                'Exit ID': eid,
+                'Exit Usage Distribution': int(count), # Round to int
+                'Status': status
+            })
+        df_exits = pd.DataFrame(exit_data)
+        
+        # 4. Total Evacuation Time (Summary)
+        # Find first step where population is 0, or use max time
+        final_time = (len(self.history) - 1) * self.DT
+        if self.history[-1] and sum(self.history[-1].values()) == 0:
+             # Find exact step it became 0
+             for t, pop in enumerate(self.history):
+                 if sum(pop.values()) == 0:
+                     final_time = t * self.DT
+                     break
+        
+        df_summary = pd.DataFrame([{
+            'Total Evacuation Time': final_time,
+            'Total Casualties': int(self.casualties) # Round to int
+        }])
+
+        # WRITE TO EXCEL
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                df_time.to_excel(writer, sheet_name='Time Metrics', index=False)
+                df_cells.to_excel(writer, sheet_name='Spatial Distribution', index=False)
+                df_exits.to_excel(writer, sheet_name='Exit Usage', index=False)
+                df_summary.to_excel(writer, sheet_name='Summary', index=False)
+            print(f"✅ Simulation results saved to {filename}")
+        except Exception as e:
+            print(f"❌ Failed to save Excel: {e}")
+
     def run(self, steps=100):
         print(f"Starting simulation for {steps} steps...")
-        # Note: History reset is handled in initialize_population now
+        # Note: History reset is handled in initialize_population now, but let's be safe
+        # If user calls run() directly without re-init?
+        # But run() relies on init.
+        # Let's trust initialize_population to do the reset before run.
         
-        # Randomize Hazard Start
-        import random
-        fire_start_time = random.randint(30, 40)
-        fire_locs = []
-        
-        # Pick 2 Random Cells explicitly NOT near Exts
-        valid_candidates = []
-        for cid in self.graph.nodes:
-            # Check dist to nearest exit
-            # We can use our computed dist_to_exit dict
-            d = self.dist_to_exit.get(cid, 0)
-            if d > 60.0: # At least 60m away from exit
-                valid_candidates.append(cid)
-        
-        if valid_candidates:
-             # Pick ONLY 1 start location
-             fire_locs = random.sample(valid_candidates, 1)
-             print(f"-> Hazard Plan: Fire at Cells {fire_locs} at Step {fire_start_time}")
-        else:
-             print("!!! WARNING: No valid fire locations found! Fire will NOT start. Check distance map.")
-
         for t in range(steps):
-            # INJECT HAZARD (RANDOMIZED)
-            if t == fire_start_time:
-                print(f"!!! HAZARD INJECTION: IGINTING FIRE AT {fire_locs} !!!")
-                for fid in fire_locs:
-                    if fid in self.penalties: 
-                        self.penalties[fid]['fire'] = random.uniform(0.7, 1.0)
-            
             total = self.step()
             self.history.append(self.population.copy())
             self.casualty_history.append(self.casualties)
             self.per_cell_casualty_history.append(self.casualties_per_cell.copy())
             self.exit_usage_history.append(self.exit_usage.copy())
             
-            if t % 50 == 0:
+            if t % 10 == 0:
                 print(f"Step {t}: Agents: {total:.0f} | Dead: {self.casualties:.0f}")
             if total < 1:
                 break
@@ -882,7 +552,30 @@ class MCASimulation:
         # FINAL REPORT
         print("\n" + "="*40)
         print(f"=== CASUALTY REPORT (Total: {self.casualties:.1f}) ===")
+        
+        # 1. Full Breakdown
+        print("Breakdown by Cell:")
+        sorted_cells = sorted(self.casualties_per_cell.items(), key=lambda x: x[1], reverse=True)
+        count = 0
+        others_count = 0
+        others_sum = 0
+        
+        for cid, deaths in sorted_cells:
+            if deaths > 0:
+                # Analyze Node Properties
+                area = self.cell_areas.get(cid, 0)
+                cap = self.max_capacities.get(cid, 0)
+                degree = len(list(self.graph.neighbors(cid))) if cid in self.graph else 0
+                
+                print(f"  Cell {cid:>4}: {deaths:>6.1f} deaths | Area: {area:>5.1f}m2 | MaxCap: {cap:>5.1f} | Neighbors: {degree}")
+                count += 1
+        
+        if count == 0:
+            print("  No casualties reported.")
         print("="*40 + "\n")
+        
+        # Don't auto-export in loop. Main will handle it.
+        # self.export_to_excel()
 
     def generate_results_dataframes(self):
         # 1. Time Series Data (Step-by-Step)
@@ -933,12 +626,12 @@ class MCASimulation:
                 
             time_data.append({
                 'Time (s)': t * self.DT,
-                'Exit Flow Rate': int(flow_step), 
-                'Remaining Evacuees': int(total_alive), 
+                'Exit Flow Rate': int(flow_step),
+                'Remaining Evacuees': int(total_alive),
                 'Density Evolution': avg_density,
                 'Velocity of Evacuees': avg_speed,
                 'Peak Density': max_rho, 
-                'Cumulative Casualties': int(cas_count) 
+                'Cumulative Casualties': int(cas_count)
             })
             
         df_time = pd.DataFrame(time_data)
@@ -983,32 +676,20 @@ class MCASimulation:
         }])
         
         return df_time, df_cells, df_exits, df_summary
+                
+    def animate_results(self):
+        print("Preparing animation (Dummy for Headless)...")
+        # Headless mode doesn't animate, but we keep the method for class compatibility if needed
+        pass
 
 def get_config_from_terminal():
-    print("\n=== MCA Simulation (Safe Zone + Dijkstra Iterative) ===")
+    print("\n=== MCA Simulation (Iterative Batch Run) ===")
     
     # Defaults
     d_agents = 5000
     d_steps = 300
     d_iters = 5
     
-    # Try parsing CLI args first
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--iters', type=int)
-    parser.add_argument('--agents', type=int)
-    parser.add_argument('--steps', type=int)
-    parser.add_argument('--block', type=int, nargs='*')
-    args, unknown = parser.parse_known_args()
-    
-    if args.iters or args.agents:
-        # If CLI args are present, use them and skip interactive input
-        return {
-            'agents': args.agents if args.agents else d_agents,
-            'steps': args.steps if args.steps else d_steps,
-            'iterations': args.iters if args.iters else d_iters,
-            'block': args.block if args.block else []
-        }
-
     try:
         a_str = input(f"Total Agents [{d_agents}]: ").strip()
         agents = int(a_str) if a_str else d_agents
@@ -1064,17 +745,20 @@ def main():
         df_t, df_s, df_e, df_sum = sim.generate_results_dataframes()
         
         # 1. Compute Scalar Metrics for this Run
+        # Means over time (excluding time=0 if needed, but mean including 0 is fine for "session average")
         mean_flow = df_t['Exit Flow Rate'].mean()
         mean_density = df_t['Density Evolution'].mean()
         mean_velocity = df_t['Velocity of Evacuees'].mean()
         peak_density = df_t['Peak Density'].max()
         
+        # End-of-Run Status
         remaining_agents = df_t['Remaining Evacuees'].iloc[-1]
         total_evacuated = df_e['Exit Usage Distribution'].sum()
         
         total_time = df_sum['Total Evacuation Time'].iloc[0]
         total_casualties = df_sum['Total Casualties'].iloc[0]
         
+        # Append to summary list
         run_summaries.append({
             'Run': i + 1,
             'Avg Exit Flow Rate': float(f"{mean_flow:.2f}"),
@@ -1087,11 +771,14 @@ def main():
             'Total Evacuation Time (s)': float(total_time)
         })
         
-        # Store for global averaging
+        # Store for global averaging of the curves
         df_t['Run'] = i + 1
         all_time_metrics.append(df_t)
+        
+        # Store for global averaging of Spatial/Exit
         all_spatial_metrics.append(df_s)
         all_exit_metrics.append(df_e)
+        
         
     print(f"\n{'='*40}")
     print("COMPUTING AGGREGATE STATS...")
@@ -1103,23 +790,27 @@ def main():
     # Calculate Average of Runs
     avg_row = df_runs.mean(numeric_only=True)
     avg_row['Run'] = 'AVERAGE' 
+    # Cast integers for logic
     avg_row['Total Casualties'] = int(avg_row['Total Casualties'])
     avg_row['Total Evacuated'] = int(avg_row['Total Evacuated'])
     avg_row['Remaining Agents'] = int(avg_row['Remaining Agents'])
     
+    # Append Average Row safely
     df_runs_final = pd.concat([df_runs, pd.DataFrame([avg_row])], ignore_index=True)
 
-    # USER REQUEST: Add column titles below the average row
+    # USER REQUEST: Add column titles below the average row for readability
     header_row = {col: col for col in df_runs.columns}
     df_runs_final = pd.concat([df_runs_final, pd.DataFrame([header_row])], ignore_index=True)
-
-    # 2. Average Time Curve
+    
+    # 2. Average Time Curve (Optional but requested "average for each metric")
+    # This gives the "Average Flow vs Time" graph data
     full_time = pd.concat(all_time_metrics)
     avg_time_curve = full_time.groupby('Time (s)').mean(numeric_only=True).reset_index()
     avg_time_curve['Run'] = 'AVERAGE_CURVE'
     
     # 3. Average Spatial Distribution
     full_spatial = pd.concat(all_spatial_metrics)
+    # Group by Cell ID and Average the numeric columns
     avg_spatial = full_spatial.groupby('Cell ID').mean(numeric_only=True).reset_index()
     avg_spatial = avg_spatial.sort_values(by='Spatial Distribution (Casualties)', ascending=False)
     
@@ -1128,6 +819,7 @@ def main():
     avg_exits = full_exits.groupby('Exit ID').mean(numeric_only=True).reset_index()
     
     # SAVE
+    # User Request: Save to same folder as script
     import os
     script_dir = os.path.dirname(os.path.abspath(__file__))
     filename = os.path.join(script_dir, "simulation_results_dijkstra_2.xlsx")
@@ -1135,6 +827,8 @@ def main():
     try:
         # STYLING
         def color_columns(s):
+            # s is a Series (column)
+            # Define colors
             c_gray = 'background-color: #e0e0e0'
             c_red = 'background-color: #ffcccb'
             c_green = 'background-color: #d0f0c0'
@@ -1146,36 +840,57 @@ def main():
             elif 'Casualties' in s.name or 'Remaining' in s.name:
                 return [c_red] * len(s)
             elif 'Evacuated' in s.name or 'Flow' in s.name:
-                return [c_green] * len(s)
+                return [c_green] * len(s) # Positive flow/evac
             elif 'Density' in s.name or 'Velocity' in s.name:
-                return [c_blue] * len(s)
+                return [c_blue] * len(s) # Physics
             elif 'Time' in s.name:
                 return [c_yellow] * len(s)
             return [''] * len(s)
 
+        # Apply style
         try:
             styled_df = df_runs_final.style.apply(color_columns, axis=0)
             
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # Sheet 1: The Iteration Table (User's primary request) - STYLED
                 styled_df.to_excel(writer, sheet_name='Run Comparisons', index=False)
+                # Sheet 2: The Average Curve
                 avg_time_curve.to_excel(writer, sheet_name='Avg Time Series', index=False)
+                # Sheet 3: Avg Spatial
                 avg_spatial.to_excel(writer, sheet_name='Avg Spatial Dist', index=False)
+                # Sheet 4: Avg Exit Usage
                 avg_exits.to_excel(writer, sheet_name='Avg Exit Usage', index=False)
                 
             print(f"✅ AVERAGED Results saved to {filename}")
+            print("Report contains 'Run Comparisons' (Colored Columns) and 'Avg Time Series'.")
             
-        except ImportError:
+        except ImportError as e:
+            # Fallback if jinja2 missing
+            print(f"⚠️ Styling failed (missing dependency): {e}. Saving unstyled version...")
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 df_runs_final.to_excel(writer, sheet_name='Run Comparisons', index=False)
                 avg_time_curve.to_excel(writer, sheet_name='Avg Time Series', index=False)
-                avg_spatial.to_excel(writer, sheet_name='Avg Spatial Dist', index=False)
-                avg_exits.to_excel(writer, sheet_name='Avg Exit Usage', index=False)
+            print(f"✅ AVERAGED Results saved to {filename} (Unstyled)")
+
+        except Exception as e:
+            print(f"⚠️ Styling/Saving failed: {e}. Attempting unstyled save...")
+            # Emergency Fallback
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                df_runs_final.to_excel(writer, sheet_name='Run Comparisons', index=False)
+                avg_time_curve.to_excel(writer, sheet_name='Avg Time Series', index=False)
             print(f"✅ AVERAGED Results saved to {filename} (Unstyled)")
 
     except Exception as e:
         print(f"❌ Failed to save Excel: {e}")
+        try:
+            df_runs_final.to_csv("simulation_results_backup.csv", index=False)
+            print("⚠️ Saved backup to simulation_results_backup.csv")
+        except:
+            pass
 
-    print("Batch Run Complete.")
+    print("Batch Run Complete. (Pure Headless Mode)")
+    # Keep console open
+    input("\nPress Enter to exit...")
 
 if __name__ == "__main__":
     main()
