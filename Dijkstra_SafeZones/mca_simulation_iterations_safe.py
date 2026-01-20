@@ -99,6 +99,11 @@ class MCASimulation:
             
             self.road_cells = gpd.read_file(self.gpkg_path, layer=layer_name)
             
+            # AUTO-FIX: Reproject if Lat/Lon (Geographic)
+            if self.road_cells.crs and self.road_cells.crs.is_geographic:
+                print("⚠️ Map is unprojected (Lat/Lon). Auto-converting to EPSG:3857 (Meters)...")
+                self.road_cells = self.road_cells.to_crs(epsg=3857)
+            
             # Ensure ID
             if 'fid' not in self.road_cells.columns:
                 self.road_cells['id'] = self.road_cells.index
@@ -111,7 +116,7 @@ class MCASimulation:
                 cell_id = row['id']
                 
                 # Area first (needed for fallback)
-                if 'cell_area' in row:
+                if 'cell_area' in row and row['cell_area'] > 0.1:
                     area = float(row['cell_area'])
                     self.cell_areas[cell_id] = area
                 else:

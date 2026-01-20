@@ -1129,7 +1129,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "csu_map.gpkg")
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "csu-map.gpkg")
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()
