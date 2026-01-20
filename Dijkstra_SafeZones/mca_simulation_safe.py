@@ -2114,7 +2114,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", themap) #road_cells_split.gpkg | xu-road-cells.gpkg | csu_map.gpkg | cmu-map.gpkg
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "usep-map.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg | csu_map.gpkg | cmu-map.gpkg
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()

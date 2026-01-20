@@ -224,7 +224,23 @@ with open(output_file, "w", encoding="utf-8") as f:
         f.write("-" * 80 + "\n")
         
         for m in model_names:
-            f.write(f"--- {m} Top Casualties ---\n")
+            # Fetch Total Casualties for the title
+            tot_cas = "N/A"
+            if models[m]['scalars'] is not None:
+                s = models[m]['scalars']
+                # Try partial match if exact key missing
+                val = s.get('Total Casualties', None)
+                if val is None:
+                    # Fallback search
+                    for k in s.keys():
+                        if 'Casualties' in str(k) and 'Total' in str(k):
+                            val = s[k]
+                            break
+                            
+                if val is not None:
+                    tot_cas = f"{val:.2f}"
+
+            f.write(f"--- {m} Top Casualties (Total Casualties: {tot_cas}) ---\n")
             if models[m]['spatial'] is not None:
                 # Look for columns
                 df = models[m]['spatial']

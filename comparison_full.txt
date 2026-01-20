@@ -1,0 +1,48 @@
+================================================================================
+                       FULL SIMULATION COMPARISON REPORT                        
+================================================================================
+CONFIGURATION: 1000 Iterations | 4996 Agents | 371 Seconds
+================================================================================
+
+1. OVERALL PERFORMANCE METRICS (Averaged)
+------------------------------------------------------------------------------------------------------------------------
+Metric                         | Baseline        | ACO             | Dijkstra        | Interpretation
+-----------------------------------------------------------------------------------------------------
+Avg Exit Flow Rate             | 12.60           | 11.22           | 12.61           | Higher is better
+Remaining Agents               | 0.00            | 76.00           | 0.00            | Lower is better
+Avg Density                    | 0.21            | 0.17            | 0.21            | Lower is better
+Avg Velocity                   | 1.03            | 1.15            | 1.03            | Higher is better
+Peak Density                   | 6.55            | 6.59            | 6.57            | Lower is better
+Total Time                     | 351.01          | 394.81          | 350.93          | Lower is better
+
+Total Evacuated                | 4612.00         | 4618.00         | 4615.00         | Higher is better
+Total Casualties               | 384.00          | 302.00          | 381.00          | Lower is better
+
+2. EXIT USAGE DISTRIBUTION
+--------------------------------------------------------------------------------
+Exit ID    | Baseline Usage  | ACO Usage       | Dijkstra Usage 
+----------------------------------------------------------------
+0          | 766.8           | 2376.6          | 765.7           | 
+1          | 3845.4          | 2242.0          | 3849.4          | 
+2          | 0.0             | 0.0             | 0.0             | 
+
+3. SPATIAL DISTRIBUTION (Top 3 Crowded Cells)
+--------------------------------------------------------------------------------
+--- Baseline Top Casualties (Total Casualties: 384.00) ---
+Cell ID    | Casualties     
+88         | 384.8          
+78         | 0.0            
+1          | 0.0            
+
+--- ACO Top Casualties (Total Casualties: 302.00) ---
+Cell ID    | Casualties     
+223        | 288.0          
+88         | 12.2           
+78         | 1.4            
+
+--- Dijkstra Top Casualties (Total Casualties: 381.00) ---
+Cell ID    | Casualties     
+88         | 381.9          
+1          | 0.0            
+2          | 0.0            
+

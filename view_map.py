@@ -246,7 +246,7 @@ def main():
         # Default options to search for
         gpkg_dir = Path(__file__).parent / "GPKG_Files"
         possible_files = [
-            gpkg_dir / "cmu-map.gpkg", 
+            gpkg_dir / "usep-map.gpkg", 
             gpkg_dir / "csu_map.gpkg", 
             gpkg_dir / "xu-road-cells.gpkg",
             gpkg_dir / "road_cells_split.gpkg"

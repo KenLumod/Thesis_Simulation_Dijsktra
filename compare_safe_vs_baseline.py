@@ -5,7 +5,7 @@ import os
 # Assuming run from root "Thesis_Simulation_Dijsktra" folder or adjusting relative paths
 files = {
     'Baseline': r"Baseline/simulation_results_base_2.xlsx",
-    'Enhanced': r"Dijkstra_SafeZones/simulation_results_dijkstra_2.xlsx"
+    'Safe Zones': r"Dijkstra_SafeZones/simulation_results_dijkstra_safe_2.xlsx"
 }
 
 # Adjust paths to absolute if needed based on CWD
@@ -225,7 +225,23 @@ with open(output_file, "w", encoding="utf-8") as f:
         f.write("-" * 80 + "\n")
         
         for m in model_names:
-            f.write(f"--- {m} Top Hazard Zones ---\n")
+            # Fetch Total Casualties for the title
+            tot_cas = "N/A"
+            if models[m]['scalars'] is not None:
+                s = models[m]['scalars']
+                # Try partial match if exact key missing
+                val = s.get('Total Casualties', None)
+                if val is None:
+                    # Fallback search
+                    for k in s.keys():
+                        if 'Casualties' in str(k) and 'Total' in str(k):
+                            val = s[k]
+                            break
+                            
+                if val is not None:
+                    tot_cas = f"{val:.2f}"
+
+            f.write(f"--- {m} Top Hazard Zones (Total Casualties: {tot_cas}) ---\n")
             if models[m]['spatial'] is not None:
                 df = models[m]['spatial']
                 
