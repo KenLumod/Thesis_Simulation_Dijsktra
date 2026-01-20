@@ -18,6 +18,15 @@ from tkinter import simpledialog, messagebox
 import pandas as pd # Ensure pandas is available for export
 
 import Dijkstra
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+config_path = BASE_DIR.parent / "GPKG_Files" / "config.txt"
+
+with open(config_path) as f:
+    line = f.read().strip()
+    themap = line.split("=", 1)[1].strip().strip('"')
+print("Start simulation", themap)
 
 warnings.filterwarnings('ignore')
 
@@ -2105,7 +2114,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "cmu-map.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg | csu_map.gpkg | cmu-map.gpkg
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", themap) #road_cells_split.gpkg | xu-road-cells.gpkg | csu_map.gpkg | cmu-map.gpkg
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()

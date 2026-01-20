@@ -16,6 +16,15 @@ import argparse
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import pandas as pd # Ensure pandas is available for export
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+config_path = BASE_DIR.parent / "GPKG_Files" / "config.txt"
+
+with open(config_path) as f:
+    line = f.read().strip()
+    themap = line.split("=", 1)[1].strip().strip('"')
+print("Start simulation", themap)
 
 warnings.filterwarnings('ignore')
 
@@ -1273,7 +1282,7 @@ def main():
     # DATA PATH
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "csu_map.gpkg")
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", themap)
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()
