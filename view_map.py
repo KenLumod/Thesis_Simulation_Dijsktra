@@ -239,11 +239,34 @@ class InteractiveGPKGMap:
         plt.show()
 
 def main():
-    # Updated path to road_cells_split.gpkg
-    gpkg_path = "C:/Users/aerod/OneDrive/Desktop/Thesis/GPKG_Files/xu-road-cells.gpkg"
-    
-    if not os.path.exists(gpkg_path):
-        print(f"❌ Error: File '{gpkg_path}' not found!")
+    # Check if a file path was provided as a command line argument
+    if len(sys.argv) > 1:
+        gpkg_path = sys.argv[1]
+    else:
+        # Default options to search for
+        gpkg_dir = Path(__file__).parent / "GPKG_Files"
+        possible_files = [
+            gpkg_dir / "csu_map.gpkg", 
+            gpkg_dir / "xu-road-cells.gpkg",
+            gpkg_dir / "road_cells_split.gpkg"
+        ]
+        
+        gpkg_path = None
+        for p in possible_files:
+            if p.exists():
+                gpkg_path = str(p)
+                break
+        
+        if gpkg_path is None and gpkg_dir.exists():
+            # Fallback to any gpkg found
+            found = list(gpkg_dir.glob("*.gpkg"))
+            if found:
+                gpkg_path = str(found[0])
+
+    if not gpkg_path or not os.path.exists(gpkg_path):
+        print(f"❌ Error: No valid GPKG file found!")
+        print(f"Searched for: {gpkg_path}")
+        print("Usage: python view_map.py [path_to_gpkg]")
         return
     
     map_viewer = InteractiveGPKGMap(gpkg_path)

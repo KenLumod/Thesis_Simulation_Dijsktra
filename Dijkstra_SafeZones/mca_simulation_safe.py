@@ -641,24 +641,24 @@ class MCASimulation:
                          override_count += 1
             print(f"Overridden {override_count} direction vectors to enforce Safe Zone -> Exit flow.")
 
-        # Pre-calc flow vectors (Standard Visualization)
-        self.flow_vectors = {}  # For Agents (Occupancy)
-        self.global_flow_vectors = {} # For Static Field Viz
+        # Compute Stable Flow Vectors for Visualization (Baseline Logic)
+        self.flow_vectors = {}
+        self.global_flow_vectors = {}
         
         for idx in self.graph.nodes:
             target_idx = self.directions.get(idx)
             dx, dy = 0, 0
             if target_idx is not None and target_idx in self.cell_centroids:
-                start = self.cell_centroids[idx]
-                end = self.cell_centroids[target_idx]
-                dx_raw = end.x - start.x
-                dy_raw = end.y - start.y
-                norm = np.hypot(dx_raw, dy_raw)
-                if norm > 0:
-                    dx = dx_raw / norm
-                    dy = dy_raw / norm
+                if idx in self.cell_centroids:
+                    start = self.cell_centroids[idx]
+                    end = self.cell_centroids[target_idx]
+                    dx_raw = end.x - start.x
+                    dy_raw = end.y - start.y
+                    norm = np.hypot(dx_raw, dy_raw)
+                    if norm > 0:
+                        dx = dx_raw / norm
+                        dy = dy_raw / norm
             
-            # Populate
             self.flow_vectors[idx] = (dx, dy)
             self.global_flow_vectors[idx] = (dx, dy)
     
@@ -667,15 +667,17 @@ class MCASimulation:
         print(f"Initializing {total_agents} agents...")
         nodes = list(self.graph.nodes)
         
-        # Prefer spawning near 'spawns'
+        # Prefer spawning near 'spawns' (BASELINE LOGIC PORT)
         if self.spawns is not None:
             source_ids = []
+            # Widen buffer to 5.0 to prevent initial overcrowding
             spawn_buffer = self.spawns.buffer(5.0)
             for idx, cell in self.road_cells.iterrows():
                 if spawn_buffer.intersects(cell.geometry).any():
                     source_ids.append(cell['id'])
             
             if source_ids:
+                # Randomize distribution
                 weights = np.random.random(len(source_ids)) 
                 weights /= weights.sum()
                 
@@ -687,6 +689,7 @@ class MCASimulation:
                 for i, cid in enumerate(source_ids):
                     self.population[cid] += counts[i]
             else:
+                 print("  Warning: No road cells found intersecting spawn buffer. Randomizing.")
                  for _ in range(total_agents):
                     self.population[np.random.choice(nodes)] += 1
         else:
@@ -1375,6 +1378,7 @@ class MCASimulation:
         cax = fig.add_axes([0.92, 0.25, 0.02, 0.6])
         
         if self.spawns is not None:
+             # Match Dijkstra Pure Style: Solid Blue, zorder=5
              self.spawns.plot(ax=ax, color='blue', marker='o', markersize=30, label='Spawn Points', zorder=5)
         if self.safe_zones is not None:
              self.safe_zones.plot(ax=ax, color='lime', marker='*', markersize=150, edgecolor='black', linewidth=1, label='Safe Zones', zorder=9)
@@ -1604,6 +1608,13 @@ class MCASimulation:
 
             # Correct frame mapping
             sim_frame = frame
+            
+            # SUBTRACT Dijkstra Pre-Roll Frames
+            if hasattr(self, 'dijkstra_history'):
+                 sim_frame = frame - len(self.dijkstra_history)
+
+            # Safety clamps
+            if sim_frame < 0: sim_frame = 0
             if sim_frame >= len(self.history):
                 sim_frame = len(self.history) - 1
 
@@ -1642,37 +1653,13 @@ class MCASimulation:
                  for idx, count in pop_data.items():
                      if count > 1.0:
                           centroid = self.cell_centroids.get(idx)
-                          
-                          # Compute vector dynamically from d_map
-                          vec = (0,0)
-                          
-                          # FIX: Use dist_to_exit for visual arrows so they point to EXIT, not SafeZone
-                          arrow_field = d_map
-                          if hasattr(self, 'dist_to_exit') and self.dist_to_exit:
-                              arrow_field = self.dist_to_exit
-                          
-                          curr_dist = arrow_field.get(idx, float('inf'))
-                          if curr_dist != float('inf'):
-                              # Find best neighbor
-                              best_n = None
-                              min_d = curr_dist
-                              for n in self.graph.neighbors(idx):
-                                  dn = arrow_field.get(n, float('inf'))
-                                  if dn < min_d:
-                                      min_d = dn
-                                      best_n = n
-                              
-                              if best_n:
-                                  cn = self.cell_centroids[best_n]
-                                  dx, dy = cn.x - centroid.x, cn.y - centroid.y
-                                  mag = (dx**2 + dy**2)**0.5
-                                  if mag > 0: vec = (dx/mag, dy/mag)
-
-                          if centroid and vec != (0,0):
-                               xq.append(centroid.x)
-                               yq.append(centroid.y)
-                               uq.append(vec[0])
-                               vq.append(vec[1])
+                          # FIX: Use Pre-Computed Stable Flow Vectors
+                          vec = self.flow_vectors.get(idx)
+                          if vec and vec != (0,0):
+                             xq.append(centroid.x)
+                             yq.append(centroid.y)
+                             uq.append(vec[0])
+                             vq.append(vec[1])
                                
                  if xq:
                      self.quiver = ax.quiver(xq, yq, uq, vq, scale=30, width=0.003, color='black', alpha=0.6, zorder=6)
@@ -1725,68 +1712,16 @@ class MCASimulation:
                  # DYNAMIC ARROWS: Compute new Flow Direction based on d_map
                  xq, yq, uq, vq = [], [], [], []
                  
-                 # Pre-compute Static Overrides (Safe Zone -> Exit)
-                 static_arrow_map = {}
-                 if hasattr(self, 'safe_path_nodes') and self.safe_path_nodes:
-                     for path in self.safe_path_nodes:
-                         for i in range(len(path) - 1):
-                             static_arrow_map[path[i]] = path[i+1]
-                 
+                 # Use Flow Vectors if available, else Dynamic
                  for idx in self.graph.nodes:
-                     if idx not in self.cell_centroids: continue
-                     
-                     # 1. CHECK SAFE ZONE OVERRIDE FIRST
-                     if idx in static_arrow_map:
-                         best_n = static_arrow_map[idx]
-                         if best_n is not None and best_n in self.cell_centroids:
-                             c_curr = self.cell_centroids[idx]
-                             c_next = self.cell_centroids[best_n]
-                             dx = c_next.x - c_curr.x
-                             dy = c_next.y - c_curr.y
-                             mag = (dx**2 + dy**2)**0.5
-                             if mag > 0:
-                                 xq.append(c_curr.x); yq.append(c_curr.y)
-                                 uq.append(dx/mag); vq.append(dy/mag)
-                             continue # Skip dynamic check
-                     
-                    
-                     # 2. DYNAMIC LOGIC (Fallback)
-                     # FIX: Use dist_to_exit for arrows so they always "look" like they point to exit
-                     # The Safe Zone logic is internal intent, but visual flow should be "To Safety"
-                     field_source = d_map # Default
-                     if hasattr(self, 'dist_to_exit') and self.dist_to_exit:
-                         field_source = self.dist_to_exit
-                     
-                     current_dist = field_source.get(idx, float('inf'))
-                     if current_dist == float('inf'): continue
-                     
-                     # Find best neighbor (lowest dist)
-                     best_n = None
-                     min_d = current_dist
-                     
-                     for n in self.graph.neighbors(idx):
-                         dn = field_source.get(n, float('inf')) # Use field_source here too
-                         if dn < min_d:
-                             min_d = dn
-                             best_n = n
-                     
-                     # If we found a downhill step
-                     if best_n is not None:
-                         c_curr = self.cell_centroids[idx]
-                         c_next = self.cell_centroids[best_n]
-                         
-                         dx = c_next.x - c_curr.x
-                         dy = c_next.y - c_curr.y
-                         # Normalize
-                         mag = (dx**2 + dy**2)**0.5
-                         if mag > 0:
-                             xq.append(c_curr.x)
-                             yq.append(c_curr.y)
-                             uq.append(dx/mag)
-                             vq.append(dy/mag)
-                             
+                     if idx in self.flow_vectors and self.flow_vectors[idx] != (0,0):
+                         c = self.cell_centroids.get(idx)
+                         v = self.flow_vectors[idx]
+                         xq.append(c.x); yq.append(c.y)
+                         uq.append(v[0]); vq.append(v[1])
+                 
                  if xq:
-                     self.quiver = ax.quiver(xq, yq, uq, vq, scale=40, width=0.002, color='white', alpha=0.5, zorder=6)
+                     self.quiver = ax.quiver(xq, yq, uq, vq, scale=30, width=0.003, color='black', alpha=0.6, zorder=6)
                  else:
                      self.quiver = None
 
@@ -2169,7 +2104,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "road_cells_split.gpkg ") #road_cells_split.gpkg | xu-road-cells.gpkg
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "csu_map.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()
