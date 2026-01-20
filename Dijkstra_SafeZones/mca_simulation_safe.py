@@ -1855,7 +1855,8 @@ class MCASimulation:
         self.speed_slider = Slider(ax_slider, 'Speed', 10, 1000, valinit=100, valstep=10)
         
         def update_speed(val):
-            self.anim.event_source.interval = val
+            if hasattr(self, 'anim') and self.anim and self.anim.event_source:
+                self.anim.event_source.interval = val
         self.speed_slider.on_changed(update_speed)
         
         ax_pause = plt.axes([0.35, 0.04, 0.1, 0.04])
@@ -2104,7 +2105,7 @@ def main():
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "csu_map.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "cmu-map.gpkg") #road_cells_split.gpkg | xu-road-cells.gpkg | csu_map.gpkg | cmu-map.gpkg
 
     sim = MCASimulation(gpkg_path)
     sim.load_data()

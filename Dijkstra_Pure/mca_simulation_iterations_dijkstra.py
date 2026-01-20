@@ -726,7 +726,7 @@ def main():
     # DATA PATH
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "road_cells_split.gpkg")
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "cmu-map.gpkg")
     
     for i in range(sim_iterations):
         print(f"\n{'='*20}\nRUN {i+1}/{sim_iterations}\n{'='*20}")

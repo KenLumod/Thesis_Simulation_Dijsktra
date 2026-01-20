@@ -1069,6 +1069,24 @@ def get_config_from_terminal():
     d_steps = 300
     d_iters = 5
     
+    # Try parsing CLI args first
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--iters', type=int)
+    parser.add_argument('--agents', type=int)
+    parser.add_argument('--steps', type=int)
+    parser.add_argument('--block', type=int, nargs='*')
+    args, unknown = parser.parse_known_args()
+    
+    if args.iters or args.agents:
+        # If CLI args are present, use them and skip interactive input
+        return {
+            'agents': args.agents if args.agents else d_agents,
+            'steps': args.steps if args.steps else d_steps,
+            'iterations': args.iters if args.iters else d_iters,
+            'block': args.block if args.block else []
+        }
+    
     try:
         a_str = input(f"Total Agents [{d_agents}]: ").strip()
         agents = int(a_str) if a_str else d_agents
@@ -1105,7 +1123,7 @@ def main():
     # DATA PATH
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "road_cells_split.gpkg")
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "cmu-map.gpkg")
     
     for i in range(sim_iterations):
         print(f"\n{'='*20}\nRUN {i+1}/{sim_iterations}\n{'='*20}")

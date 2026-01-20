@@ -227,19 +227,21 @@ with open(output_file, "w", encoding="utf-8") as f:
         for m in model_names:
             f.write(f"--- {m} Top Hazard Zones ---\n")
             if models[m]['spatial'] is not None:
-                # Look for columns
                 df = models[m]['spatial']
-                # Sort by Casualties descending
-                cas_col = [c for c in df.columns if 'Casualties' in c][0]
                 
-                top = df.sort_values(by=cas_col, ascending=False).head(5)
-                f.write(f"{'Cell ID':<10} | {'Casualties':<15}\n")
-                for _, row in top.iterrows():
-                    val = row[cas_col]
-                    if val > 0:
-                        f.write(f"{int(row['Cell ID']):<10} | {val:<15.1f}\n")
-                    else:
-                        break # Stop if 0
+                # Check metrics available
+                cols = df.columns
+                cas_col = next((c for c in cols if 'Casualties' in c), None)
+                
+                if cas_col:
+                    # Sort desc
+                    top = df.sort_values(by=cas_col, ascending=False).head(5)
+                    f.write(f"{'Cell ID':<10} | {'Casualties':<15}\n")
+                    for _, row in top.iterrows():
+                        val = row[cas_col]
+                        f.write(f"{int(row['Cell ID']):<10} | {val:<15.2f}\n")
+                else:
+                    f.write("No 'Casualties' column found.\n")
             else:
                 f.write("No spatial data.\n")
             f.write("\n")
