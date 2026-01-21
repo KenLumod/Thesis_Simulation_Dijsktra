@@ -274,10 +274,12 @@ class MCASimulation:
 
         if not exit_indices:
             print("WARNING: No exits connected. Using fallback.")
-            min_x = self.road_cells.bounds.minx.min()
             ids = self.road_cells[self.road_cells.bounds.minx < min_x + 10]['id'].tolist()
             exit_indices = ids
             for i in ids: self.road_to_exit[i] = 999 
+
+
+        # as per user requirement (count evacuees even if "closed" visually)
 
         self.exits_ids = exit_indices
         valid_exits = [e for e in self.exits_ids if e in self.graph]
@@ -801,19 +803,23 @@ class MCASimulation:
             if target_id is None:
                 # Sink or stuck
                 if cid in self.directions: 
-                     # Absorb flow at sink
-                     area = self.cell_areas.get(cid, 60.0)
-                     width = self.CELL_WIDTH # Approximate width if not in GPKG
-                     
-                     flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
-                     actual_out = min(new_population[cid], flow_out)
-                     
-                     new_population[cid] = max(0, new_population[cid] - actual_out)
-                     
-                     # Track Exit Usage
+                     # Check if this is actually an EXIT
                      exit_id = self.road_to_exit.get(cid)
+                     
                      if exit_id is not None:
+                         # VALID EXIT -> Absorb flow
+                         area = self.cell_areas.get(cid, 60.0)
+                         width = self.CELL_WIDTH # Approximate width if not in GPKG
+                         
+                         flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
+                         actual_out = min(new_population[cid], flow_out)
+                         
+                         new_population[cid] = max(0, new_population[cid] - actual_out)
                          self.exit_usage[exit_id] += actual_out
+                     else:
+                         # LOCAL MINIMUM -> Stuck
+                         # Agents remain here. do nothing.
+                         pass
                 continue
             
             # Flow Calculation
@@ -891,6 +897,25 @@ class MCASimulation:
         # FINAL REPORT
         print("\n" + "="*40)
         print(f"=== CASUALTY REPORT (Total: {self.casualties:.1f}) ===")
+        
+        # AGENT BALANCE CHECK
+        total_remaining = sum(self.population.values())
+        total_evacuated = sum(self.exit_usage.values())
+        total_dead = self.casualties
+        final_total = total_remaining + total_evacuated + total_dead
+        
+        print(f"=== AGENT BALANCE SHEET ===")
+        print(f"  Total Initial: {self.total_agents_init}")
+        print(f"  Remaining:     {total_remaining:.0f}")
+        print(f"  Evacuated:     {total_evacuated:.0f}")
+        print(f"  Dead:          {total_dead:.0f}")
+        print(f"  Calculated Sum:{final_total:.0f}")
+        diff = self.total_agents_init - final_total
+        print(f"  DISCREPANCY:   {diff:.0f}")
+        if abs(diff) > 1.0:
+            print("  ⚠️ WARNING: AGENTS MISSING! DEBUG 'step' FUNCTION!")
+        else:
+            print("  ✅ AGENT ACCOUNTING BALANCED.")
         print("="*40 + "\n")
 
     def generate_results_dataframes(self):
@@ -1038,7 +1063,17 @@ def get_config_from_terminal():
         return {'agents': d_agents, 'steps': d_steps, 'iterations': d_iters, 'block': []}
 
 def main():
-    config = get_config_from_terminal()
+    import sys
+    
+    # Check for CLI flag to bypass GUI/Input
+    cli_mode = '--cli' in sys.argv
+    
+    if cli_mode:
+        print("CLI Mode detected. Using Default Batch Config...")
+        config = {'agents': 5000, 'steps': 500, 'iterations': 1, 'block': []}
+    else:
+        config = get_config_from_terminal()
+        
     print(f"\nStarting Batch Run with config: {config}")
     
     sim_iterations = config['iterations']
@@ -1054,7 +1089,7 @@ def main():
     # DATA PATH
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "usep-map.gpkg")
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", themap)
     
     for i in range(sim_iterations):
         print(f"\n{'='*20}\nRUN {i+1}/{sim_iterations}\n{'='*20}")

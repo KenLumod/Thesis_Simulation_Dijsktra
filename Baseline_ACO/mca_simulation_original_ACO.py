@@ -50,7 +50,7 @@ class MCASimulation:
         self.cell_areas = {}   # cell_id -> area (float)
         
         # Stampede Logic
-        self.STAMPEDE_DENSITY = 3.5 # p/m^2 (Lowered from 4.5 to increase sensitivity)
+        self.STAMPEDE_DENSITY = 1.5 # p/m^2 (Lowered from 4.5 to increase sensitivity)
         self.DEATH_RATE = 0.1 # 10% per second if overcrowded
         
         # State
@@ -409,19 +409,23 @@ class MCASimulation:
             if target_id is None:
                 # Sink or stuck
                 if cid in self.directions: 
-                     # Absorb flow at sink
-                     area = self.cell_areas.get(cid, 60.0)
-                     width = self.CELL_WIDTH # Approximate width if not in GPKG
-                     
-                     flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
-                     actual_out = min(new_population[cid], flow_out)
-                     
-                     new_population[cid] = max(0, new_population[cid] - actual_out)
-                     
-                     # Track Exit Usage
+                     # Check if this is actually an EXIT
                      exit_id = self.road_to_exit.get(cid)
+                     
                      if exit_id is not None:
+                         # VALID EXIT -> Absorb flow
+                         area = self.cell_areas.get(cid, 60.0)
+                         width = self.CELL_WIDTH # Approximate width if not in GPKG
+                         
+                         flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
+                         actual_out = min(new_population[cid], flow_out)
+                         
+                         new_population[cid] = max(0, new_population[cid] - actual_out)
                          self.exit_usage[exit_id] += actual_out
+                     else:
+                         # LOCAL MINIMUM -> Stuck
+                         # Agents remain here. do nothing.
+                         pass
                 continue
             
             # Flow Calculation
@@ -1273,9 +1277,17 @@ def show_launcher():
     return config
 
 def main():
-    # Use Launcher if no CLI args provided, or force usage 
-    # For now, let's prioritize the Launcher as requested by user.
-    config = show_launcher()
+    import sys
+    
+    # Check for CLI flag to bypass GUI
+    cli_mode = '--cli' in sys.argv
+    
+    if cli_mode:
+        print("CLI Mode detected. Bypassing GUI Launcher...")
+        # Default config per V2
+        config = {'block': [], 'agents': 5000, 'steps': 500}
+    else:
+        config = show_launcher()
     
     print(f"Starting with config: {config}")
 
@@ -1300,7 +1312,9 @@ def main():
     
     sim.initialize_population(total_agents=config['agents'])
     sim.run(steps=config['steps'])
-    sim.animate_results()
+    
+    if not cli_mode:
+        sim.animate_results()
 
 if __name__ == "__main__":
     main()

@@ -1,46 +1,47 @@
 ================================================================================
                   SAFE ZONE VS BASELINE COMPARISON REPORT                       
 ================================================================================
-CONFIGURATION: 500 Iterations | 4996 Agents | 300 Seconds Max
+CONFIGURATION: 500 Iterations | 4994 Agents | 300 Seconds Max
 ================================================================================
 
 1. OVERALL PERFORMANCE METRICS (RSME / Efficiency)
 ------------------------------------------------------------------------------------------------------------------------
 Metric                         | Baseline        | Safe Zones      | Interpretation
 -----------------------------------------------------------------------------------
-Avg Exit Flow Rate             | 14.28           | 15.73           | Higher is better (evacuation speed)
-Remaining Agents               | 99.00           | 75.00           | Lower is better (clearance)
-Total Evacuated                | 4438.00         | 4884.00         | Higher is better
-Total Casualties               | 459.00          | 78.00           | Lower is better (safety)
+Avg Exit Flow Rate             | 7.96            | 13.09           | Higher is better (evacuation speed)
+Remaining Agents               | 1752.00         | 909.00          | Lower is better (clearance)
+Total Evacuated                | 2543.00         | 4086.00         | Higher is better
+Total Casualties               | 699.00          | 1.00            | Lower is better (safety)
 
-Avg Density                    | 0.24            | 0.25            | Lower is better (congestion)
-Avg Velocity                   | 0.99            | 1.13            | Higher is better (mobility)
-Peak Density                   | 6.40            | 6.43            | Lower is better (crush risk)
+Avg Density                    | 0.21            | 0.14            | Lower is better (congestion)
+Avg Velocity                   | 0.93            | 1.34            | Higher is better (mobility)
+Peak Density                   | 9.26            | 8.90            | Lower is better (crush risk)
 Total Time                     | 300.00          | 300.00          | Lower is better
 
 2. EXIT USAGE DISTRIBUTION (Load Balancing)
 --------------------------------------------------------------------------------
 Exit ID    | Baseline Usage  | Safe Zones Usage
 -----------------------------------------------
-0          | 768.1           | 2393.5          | 
-1          | 3670.5          | 2490.6          | 
-2          | 0.0             | 0.0             | 
+0          | 1023.4          | 1466.3          | 
+1          | 1028.7          | 1048.5          | 
+2          | 491.8           | 297.6           | 
+3          | 0.0             | 1274.6          | 
 
 3. SPATIAL DISTRIBUTION (Top 5 Casualty/Blockage Zones)
 --------------------------------------------------------------------------------
---- Baseline Top Hazard Zones (Total Casualties: 459.00) ---
+--- Baseline Top Hazard Zones (Total Casualties: 699.00) ---
 Cell ID    | Casualties     
-88         | 458.53         
-78         | 0.46           
-51         | 0.04           
-1          | 0.00           
-2          | 0.00           
+90         | 153.53         
+316        | 142.97         
+361        | 95.26          
+312        | 67.07          
+298        | 58.08          
 
---- Safe Zones Top Hazard Zones (Total Casualties: 78.00) ---
+--- Safe Zones Top Hazard Zones (Total Casualties: 1.00) ---
 Cell ID    | Casualties     
-141        | 38.62          
-78         | 0.38           
-1          | 0.00           
-2          | 0.00           
-3          | 0.00           
+108        | 0.21           
+109        | 0.13           
+110        | 0.08           
+106        | 0.08           
+112        | 0.04           
 

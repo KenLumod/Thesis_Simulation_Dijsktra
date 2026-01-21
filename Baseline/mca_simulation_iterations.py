@@ -298,26 +298,98 @@ class MCASimulation:
             # Assign fallback ID
             for i in ids: self.road_to_exit[i] = 999 
 
-        distances = {node: float('inf') for node in self.graph.nodes}
-        for exit_idx in exit_indices:
-            distances[exit_idx] = 0
-            self.directions[exit_idx] = None
-            
-        queue = list(exit_indices)
-        visited = set(exit_indices)
+        # SPECIAL HANDLING: Map CLOSED exits to nearest cell for counting/SDF
+        # as per user requirement (count evacuees even if "closed" visually)
+        for eid, status in self.exit_status.items():
+            if status == 'CLOSED':
+                exit_geom = self.exits.loc[eid].geometry
+                
+                # Find nearest road cell
+                min_dist = float('inf')
+                nearest_id = None
+                
+                # Iterate all road cells - could be slow, but safe
+                # Optimization: Use cell_centroids
+                for cid, pt in self.cell_centroids.items():
+                    d = pt.distance(exit_geom)
+                    if d < min_dist:
+                        min_dist = d
+                        nearest_id = cid
+                
+                if nearest_id is not None:
+                    # Treat as valid exit for SDF and Counting
+                    if nearest_id not in exit_indices:
+                        exit_indices.append(nearest_id)
+                    
+                    # Map for stats (Overwrites if multiple, but acceptable)
+                    self.road_to_exit[nearest_id] = eid
+                    
+                    print(f"DEBUG: Mapping CLOSED Exit {eid} to nearest cell {nearest_id} (Dist: {min_dist:.1f}m) for counting.")
+
+        # Static Distance Field (Euclidean)
+        print("  - Calculating Static Distance Field (Euclidean)...")
+        distances = {}
         
-        while queue:
-            current = queue.pop(0)
-            current_dist = distances[current]
-            for neighbor in self.graph.neighbors(current):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    distances[neighbor] = current_dist + 1
-                    self.directions[neighbor] = current
-                    queue.append(neighbor)
-                elif distances[neighbor] > current_dist + 1:
-                    distances[neighbor] = current_dist + 1
-                    self.directions[neighbor] = current
+        # Optimization: Pre-compute exit points
+        exit_points = []
+        for eid in exit_indices:
+            if eid in self.cell_centroids:
+                exit_points.append(self.cell_centroids[eid])
+        
+        if not exit_points:
+             print("  - WARNING: No reachable exit centroids for distance calculation.")
+        
+        # Valid nodes are those in the graph (which excludes blocked ones)
+        valid_nodes = list(self.graph.nodes)
+        
+        # 1. Calculate Distances (The "Field")
+        for nid in valid_nodes:
+            if nid in exit_indices:
+                distances[nid] = 0.0
+                self.directions[nid] = None
+                continue
+            
+            if nid not in self.cell_centroids:
+                distances[nid] = float('inf')
+                continue
+                
+            start_pt = self.cell_centroids[nid]
+            # Euclidean distance to nearest exit
+            min_dist = float('inf')
+            for e_pt in exit_points:
+                d = start_pt.distance(e_pt)
+                if d < min_dist: min_dist = d
+            distances[nid] = min_dist
+
+        # 2. Determine Gradient (Flow Direction)
+        # "The cell decides locally every step" (Static mapping for efficiency)
+        local_minima_count = 0
+        for nid in valid_nodes:
+            if nid in exit_indices: continue
+            
+            my_dist = distances.get(nid, float('inf'))
+            best_target = None
+            best_target_dist = my_dist # Candidate must be STRICTLY closer
+            
+            neighbors = list(self.graph.neighbors(nid))
+            if not neighbors: continue
+            
+            # Simple Greedy Descent
+            for nbr in neighbors:
+                d_nbr = distances.get(nbr, float('inf'))
+                if d_nbr < best_target_dist:
+                    best_target_dist = d_nbr
+                    best_target = nbr
+            
+            if best_target is not None:
+                self.directions[nid] = best_target
+            else:
+                # No neighbor is closer -> Local Minimum due to geometry/obstacles
+                self.directions[nid] = None
+                local_minima_count += 1
+                
+        if local_minima_count > 0:
+            print(f"  - WARNING: {local_minima_count} cells are in Local Minima (no neighbor is closer to exit). Flow may stop there.")
         
         # Pre-calc flow vectors
         for idx, target_idx in self.directions.items():
@@ -407,19 +479,23 @@ class MCASimulation:
             if target_id is None:
                 # Sink or stuck
                 if cid in self.directions: 
-                     # Absorb flow at sink
-                     area = self.cell_areas.get(cid, 60.0)
-                     width = self.CELL_WIDTH # Approximate width if not in GPKG
-                     
-                     flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
-                     actual_out = min(new_population[cid], flow_out)
-                     
-                     new_population[cid] = max(0, new_population[cid] - actual_out)
-                     
-                     # Track Exit Usage
+                     # Check if this is actually an EXIT
                      exit_id = self.road_to_exit.get(cid)
+                     
                      if exit_id is not None:
+                         # VALID EXIT -> Absorb flow
+                         area = self.cell_areas.get(cid, 60.0)
+                         width = self.CELL_WIDTH # Approximate width if not in GPKG
+                         
+                         flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
+                         actual_out = min(new_population[cid], flow_out)
+                         
+                         new_population[cid] = max(0, new_population[cid] - actual_out)
                          self.exit_usage[exit_id] += actual_out
+                     else:
+                         # LOCAL MINIMUM -> Stuck
+                         # Agents remain here. do nothing.
+                         pass
                 continue
             
             # Flow Calculation
@@ -1118,7 +1194,7 @@ def get_config_from_terminal():
 def main():
     config = get_config_from_terminal()
     print(f"\nStarting Batch Run with config: {config}")
-    
+
     sim_iterations = config['iterations']
     
     # Store per-run summaries
@@ -1132,8 +1208,8 @@ def main():
     # DATA PATH
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", "usep-map.gpkg")
-    
+    gpkg_path = os.path.join(base_dir, "..", "GPKG_Files", themap) # Using 'themap' here
+
     for i in range(sim_iterations):
         print(f"\n{'='*20}\nRUN {i+1}/{sim_iterations}\n{'='*20}")
         

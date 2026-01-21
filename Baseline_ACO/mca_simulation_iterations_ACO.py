@@ -412,19 +412,23 @@ class MCASimulation:
             if target_id is None:
                 # Sink or stuck
                 if cid in self.directions: 
-                     # Absorb flow at sink
-                     area = self.cell_areas.get(cid, 60.0)
-                     width = self.CELL_WIDTH # Approximate width if not in GPKG
-                     
-                     flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
-                     actual_out = min(new_population[cid], flow_out)
-                     
-                     new_population[cid] = max(0, new_population[cid] - actual_out)
-                     
-                     # Track Exit Usage
+                     # Check if this is actually an EXIT
                      exit_id = self.road_to_exit.get(cid)
+                     
                      if exit_id is not None:
+                         # VALID EXIT -> Absorb flow
+                         area = self.cell_areas.get(cid, 60.0)
+                         width = self.CELL_WIDTH # Approximate width if not in GPKG
+                         
+                         flow_out = (self.V_FREE * width * self.DT * self.RHO_MAX)
+                         actual_out = min(new_population[cid], flow_out)
+                         
+                         new_population[cid] = max(0, new_population[cid] - actual_out)
                          self.exit_usage[exit_id] += actual_out
+                     else:
+                         # LOCAL MINIMUM -> Stuck
+                         # Agents remain here. do nothing.
+                         pass
                 continue
             
             # Flow Calculation
@@ -1103,7 +1107,17 @@ def get_config_from_terminal():
         return {'agents': d_agents, 'steps': d_steps, 'iterations': d_iters, 'block': []}
 
 def main():
-    config = get_config_from_terminal()
+    import sys
+    
+    # Check for CLI flag to bypass GUI/Input
+    cli_mode = '--cli' in sys.argv
+    
+    if cli_mode:
+        print("CLI Mode detected. Using Default Batch Config...")
+        config = {'agents': 5000, 'steps': 500, 'iterations': 1, 'block': []}
+    else:
+        config = get_config_from_terminal()
+    
     print(f"\nStarting Batch Run with config: {config}")
     
     sim_iterations = config['iterations']

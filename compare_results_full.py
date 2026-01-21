@@ -1,11 +1,13 @@
 import pandas as pd
 import os
 
-# Paths (User specified new names)
+# Paths (Dynamic based on CWD)
+base_dir = os.getcwd()
 files = {
-    'Baseline': r"c:\Users\aerod\OneDrive\Desktop\Thesis\Baseline\simulation_results_base_2.xlsx",
-    'ACO': r"c:\Users\aerod\OneDrive\Desktop\Thesis\Baseline_ACO\simulation_results_aco_2.xlsx",
-    'Dijkstra': r"c:\Users\aerod\OneDrive\Desktop\Thesis\Dijkstra_Pure\simulation_results_dijkstra_2.xlsx"
+    'Baseline': os.path.join(base_dir, 'Baseline', 'simulation_results_base_2.xlsx'),
+    'ACO': os.path.join(base_dir, 'Baseline_ACO', 'simulation_results_aco_2.xlsx'),
+    'Dijkstra': os.path.join(base_dir, 'Dijkstra_Pure', 'simulation_results_dijkstra_2.xlsx'),
+    'Safe Zones': os.path.join(base_dir, 'Dijkstra_SafeZones', 'simulation_results_dijkstra_safe_2.xlsx')
 }
 
 output_file = "comparison_full.txt"
